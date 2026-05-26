@@ -211,8 +211,9 @@ def _scan_hosts(hosts: list, label: str) -> str | None:
     return None
 
 
-def _probe_live_24s(prefixes: list[str]) -> list[str]:
+def _probe_live_24s(prefixes: list[str], label: str) -> list[str]:
     """Return /24 prefixes where .1 or .254 answers on a PaperCut port."""
+    pfx = f"    probing {label} ({len(prefixes)} subnets)"
     live: list[str] = []
 
     def probe(prefix):
@@ -223,9 +224,18 @@ def _probe_live_24s(prefixes: list[str]) -> list[str]:
         return None
 
     with ThreadPoolExecutor(max_workers=300) as pool:
-        for hit in pool.map(probe, prefixes):
+        futures = {pool.submit(probe, p): p for p in prefixes}
+        done = 0
+        for future in as_completed(futures):
+            spin = _SPINNER[done % len(_SPINNER)]
+            print(f"\r{pfx} {spin}", end="", flush=True)
+            done += 1
+            hit = future.result()
             if hit:
                 live.append(hit)
+
+    result = f"{len(live)} candidate(s)" if live else "no candidates"
+    print(f"\r{pfx} {result}")
     return live
 
 
@@ -261,18 +271,13 @@ def _discover_scan(networks: list[ipaddress.IPv4Network]) -> str | None:
         if f"{first}.{second}.{c}" not in scanned_prefixes
     ]
     if candidates_16:
-        print(f"    probing {first}.{second}.0.0/16...", end=" ", flush=True)
-        live = _probe_live_24s(candidates_16)
-        if live:
-            print(f"{len(live)} candidate(s)")
-            for prefix in live:
-                result = _scan_hosts(
-                    [f"{prefix}.{i}" for i in range(1, 255)], f"{prefix}.0/24"
-                )
-                if result:
-                    return result
-        else:
-            print("no candidates")
+        live = _probe_live_24s(candidates_16, f"{first}.{second}.0.0/16")
+        for prefix in live:
+            result = _scan_hosts(
+                [f"{prefix}.{i}" for i in range(1, 255)], f"{prefix}.0/24"
+            )
+            if result:
+                return result
 
     # 3. Rest of the /8 — only within RFC 1918 private space
     # 10.0.0.0/8 is fully private; 172.16-31.x.x and 192.168.x.x are the others.
@@ -295,16 +300,13 @@ def _discover_scan(networks: list[ipaddress.IPv4Network]) -> str | None:
         if f"{first}.{b}.{c}" not in scanned_prefixes
     ]
     if candidates_8:
-        print(f"    probing {first}.0.0.0/8...", end=" ", flush=True)
-        live = _probe_live_24s(candidates_8)
-        if live:
-            print(f"{len(live)} candidate(s)")
-            for prefix in live:
-                result = _scan_hosts(
-                    [f"{prefix}.{i}" for i in range(1, 255)], f"{prefix}.0/24"
-                )
-                if result:
-                    return result
+        live = _probe_live_24s(candidates_8, f"{first}.0.0.0/8")
+        for prefix in live:
+            result = _scan_hosts(
+                [f"{prefix}.{i}" for i in range(1, 255)], f"{prefix}.0/24"
+            )
+            if result:
+                return result
         else:
             print("no candidates")
 
