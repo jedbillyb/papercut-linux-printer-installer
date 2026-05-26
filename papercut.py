@@ -128,9 +128,10 @@ def _dns_query(server: str, hostname: str) -> str | None:
 
 # ── discovery methods ─────────────────────────────────────────────────────────
 
-def _discover_mdns(timeout: int = 5) -> str | None:
+def _start_mdns() -> tuple[object, list[str]] | tuple[None, None]:
+    """Start mDNS listeners. Returns (zeroconf, found_list) — caller does the wait."""
     if not HAS_ZEROCONF:
-        return None
+        return None, None
     found: list[str] = []
 
     class Listener:
@@ -149,9 +150,7 @@ def _discover_mdns(timeout: int = 5) -> str | None:
 
     zc = Zeroconf()
     [ServiceBrowser(zc, t, Listener()) for t in MDNS_TYPES]
-    time.sleep(timeout)
-    zc.close()
-    return found[0] if found else None
+    return zc, found
 
 
 def _discover_dns(gateway: str) -> str | None:
@@ -328,24 +327,30 @@ def _get_own_ip() -> str | None:
 def discover_server() -> str | None:
     print("Searching for PaperCut server...")
 
+    mdns_msg = "  [1/3] mDNS broadcast"
     if HAS_ZEROCONF:
-        print("  [1/3] mDNS broadcast...", end=" ", flush=True)
-        ip = _discover_mdns(timeout=4)
+        zc, found = _start_mdns()
+        for i in range(40):  # 4 s in 100 ms ticks
+            print(f"\r{mdns_msg} {_SPINNER[i % len(_SPINNER)]}", end="", flush=True)
+            time.sleep(0.1)
+            if found:
+                break
+        zc.close()
+        ip = found[0] if found else None
+        print(f"\r{mdns_msg} {'found ' + ip if ip else 'not found'}")
         if ip:
-            print(f"found {ip}")
             return ip
-        print("not found")
     else:
-        print("  [1/3] mDNS skipped — install python3-zeroconf for faster discovery")
+        print(f"{mdns_msg} skipped — install python3-zeroconf for faster discovery")
 
     gateway = _default_gateway()
     if gateway:
-        print(f"  [2/3] DNS via gateway ({gateway})...", end=" ", flush=True)
+        msg = f"  [2/3] DNS via gateway ({gateway})"
+        print(f"\r{msg} {_SPINNER[0]}", end="", flush=True)
         ip = _discover_dns(gateway)
+        print(f"\r{msg} {'found ' + ip if ip else 'not found'}")
         if ip:
-            print(f"found {ip}")
             return ip
-        print("not found")
 
     networks = _local_networks()
     if networks:
