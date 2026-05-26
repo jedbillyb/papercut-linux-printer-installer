@@ -360,8 +360,9 @@ def _make_opener(jar: http.cookiejar.CookieJar) -> urllib.request.OpenerDirector
 
 
 def _form_login(opener: urllib.request.OpenerDirector,
-                base: str, username: str, password: str) -> str:
-    """GET /user to scrape the login form, then POST to its action URL. Returns response HTML."""
+                base: str, username: str, password: str) -> tuple[str, str | None]:
+    """GET /user to scrape the login form, then POST to its action URL.
+    Returns (response_html, jsessionid_from_action_url)."""
     # Step 1: fetch the login page to get the real form action and hidden fields
     _dbg(f"GET {base}/user")
     try:
@@ -370,7 +371,7 @@ def _form_login(opener: urllib.request.OpenerDirector,
             _dbg(f"  → {r.status} ({len(login_html)} bytes)")
     except Exception as e:
         _dbg(f"  → 0 ({e})")
-        return ""
+        return "", None
 
     # Parse form action (may be relative like /app;jsessionid=...)
     action_m = re.search(r'<form[^>]+action=["\']([^"\']+)["\']', login_html, re.IGNORECASE)
@@ -386,6 +387,10 @@ def _form_login(opener: urllib.request.OpenerDirector,
     else:
         post_url = f"{base}/user"
     _dbg(f"  form action → {post_url}")
+
+    jsid_m = re.search(r';jsessionid=([^?&"\']+)', post_url)
+    url_jsid = jsid_m.group(1) if jsid_m else None
+    _dbg(f"  jsessionid from action URL = {url_jsid}")
 
     # Collect all hidden input fields
     fields: dict[str, str] = {}
@@ -414,13 +419,14 @@ def _form_login(opener: urllib.request.OpenerDirector,
         with opener.open(req, timeout=10) as r:
             html = r.read().decode("utf-8", errors="replace")
             _dbg(f"  → {r.status} ({len(html)} bytes)")
-            return html
+            _dbg(f"  login page preview: {html[:500]}")
+            return html, url_jsid
     except urllib.error.HTTPError as e:
         _dbg(f"  → {e.code}")
-        return ""
+        return "", url_jsid
     except Exception as e:
         _dbg(f"  → 0 ({e})")
-        return ""
+        return "", url_jsid
 
 
 def _session_get(opener: urllib.request.OpenerDirector, url: str) -> tuple[int, str]:
@@ -495,14 +501,16 @@ def fetch_printers(server: str, username: str, password: str) -> list[dict]:
         opener = _make_opener(jar)
 
         # Step 1: form POST login — follows the redirect and lands on the user page
-        login_html = _form_login(opener, base, username, password)
-        jsid = next((c.value for c in jar if c.name == "JSESSIONID"), None)
-        _dbg(f"  JSESSIONID={jsid}")
+        login_html, url_jsid = _form_login(opener, base, username, password)
+        cookie_jsid = next((c.value for c in jar if c.name == "JSESSIONID"), None)
+        jsid = url_jsid or cookie_jsid
+        _dbg(f"  jsessionid (url={url_jsid}, cookie={cookie_jsid})")
 
         # Step 2: collect HTML from the login response + additional authenticated pages
+        jsid_suffix = f";jsessionid={jsid}" if jsid else ""
         all_html = login_html
         for path in ("/user", "/user/printers"):
-            _, html = _session_get(opener, base + path)
+            _, html = _session_get(opener, base + path + jsid_suffix)
             all_html += html
 
         printers = _dedup([_printer_from_match(m) for m in TOKEN_RE.finditer(all_html)])
