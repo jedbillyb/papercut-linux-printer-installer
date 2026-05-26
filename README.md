@@ -1,4 +1,4 @@
-<p align="right"><a href="https://jedbillyb.com"><img src="https://img.shields.io/badge/jedbillyb.com-000?style=for-the-badge&logo=archlinux&logoColor=blue" /></a></p>
+<a href="https://jedbillyb.com"><img align="right" src="https://img.shields.io/badge/jedbillyb.com-000?style=for-the-badge&logo=archlinux&logoColor=blue" /></a>
 
 # PaperCut Linux Printer Installer
 
@@ -141,12 +141,6 @@ Pull requests are welcome. Please keep changes focused - one fix or feature per 
 
 ---
 
-## License
-
-[MIT](LICENSE)
-
----
-
 <div align="center">
-<sub>MIT © <a href="https://jedbillyb.com">jedbillyb</a> · Made with ❤️</sub>
+<sub>MIT © <a href="https://jedbillyb.com">jedbillyb</a> · <a href="https://jedbillyb.com">jedbillyb.com</a></sub>
 </div>
