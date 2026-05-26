@@ -203,10 +203,10 @@ def _scan_hosts(hosts: list, label: str) -> str | None:
             if result:
                 for f in futures:
                     f.cancel()
-                print(f"\r{prefix} found {result}")
+                print(f"\r{prefix}... found {result}")
                 return result
 
-    print(f"\r{prefix} not found")
+    print(f"\r{prefix}... not found")
     return None
 
 
@@ -234,7 +234,7 @@ def _probe_live_24s(prefixes: list[str], label: str) -> list[str]:
                 live.append(hit)
 
     result = f"{len(live)} candidate(s)" if live else "no candidates"
-    print(f"\r{pfx} {result}")
+    print(f"\r{pfx}... {result}")
     return live
 
 
@@ -335,7 +335,7 @@ def discover_server() -> str | None:
                 break
         zc.close()
         ip = found[0] if found else None
-        print(f"\r{header} {'found ' + ip if ip else 'not found (mDNS)'}")
+        print(f"\r{header}... {'found ' + ip if ip else 'not found'}")
         if ip:
             return ip
     else:
@@ -347,7 +347,7 @@ def discover_server() -> str | None:
         msg = f"  [2/3] DNS via gateway ({gateway})"
         print(f"\r{msg} {_SPINNER[0]}", end="", flush=True)
         ip = _discover_dns(gateway)
-        print(f"\r{msg} {'found ' + ip if ip else 'not found'}")
+        print(f"\r{msg}... {'found ' + ip if ip else 'not found'}")
         if ip:
             return ip
 
