@@ -19,7 +19,6 @@ import os
 import re
 import socket
 import ssl
-import struct
 import subprocess
 import sys
 import time
@@ -42,7 +41,6 @@ MDNS_TYPES = [
     "_ipps._tcp.local.",
 ]
 
-# Common hostnames PaperCut servers use
 PAPERCUT_HOSTNAMES = [
     "rpc.pc-printer-discovery",
     "pc-printer-discovery",
@@ -58,6 +56,9 @@ TOKEN_RE = re.compile(
     r"(https?)://([^/:]+)(?::\d+)?/printers/([^/]+)/users/(\d+)/([0-9a-f]{64})"
 )
 
+# Matches PaperCut IPP device URIs registered in CUPS
+_CUPS_PC_RE = re.compile(r"device for (\S+):\s+ipps?://[^:]+:\d+/printers/")
+
 
 # ── network helpers ───────────────────────────────────────────────────────────
 
@@ -70,18 +71,18 @@ def _default_gateway() -> str | None:
         return None
 
 
-def _local_network() -> ipaddress.IPv4Network | None:
-    """Return the local subnet (e.g. 10.10.0.0/20)."""
+def _local_networks() -> list[ipaddress.IPv4Network]:
+    """Return all non-loopback local subnets (handles multiple interfaces)."""
+    nets: list[ipaddress.IPv4Network] = []
     try:
         result = subprocess.run(["ip", "addr"], capture_output=True, text=True)
-        # Find the non-loopback inet address
         for m in re.finditer(r"inet (\d+\.\d+\.\d+\.\d+/\d+)", result.stdout):
             net = ipaddress.IPv4Interface(m.group(1)).network
-            if not net.is_loopback:
-                return net
+            if not net.is_loopback and net not in nets:
+                nets.append(net)
     except Exception:
         pass
-    return None
+    return nets
 
 
 def _port_open(ip: str, port: int, timeout: float = 0.3) -> bool:
@@ -95,7 +96,6 @@ def _port_open(ip: str, port: int, timeout: float = 0.3) -> bool:
 def _dns_query(server: str, hostname: str) -> str | None:
     """Send a raw DNS A query to a specific server. Returns IP or None."""
     try:
-        # Build minimal DNS query
         query = b"\xab\xcd\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
         for label in hostname.rstrip(".").split("."):
             query += bytes([len(label)]) + label.encode()
@@ -107,18 +107,18 @@ def _dns_query(server: str, hostname: str) -> str | None:
         data, _ = s.recvfrom(512)
         s.close()
 
-        # Walk past the question section, find first A record
+        # Walk past the question section to find first A record
         i = 12
         while i < len(data) and data[i] != 0:
             i += data[i] + 1
         i += 5  # skip null + qtype + qclass
 
         while i + 10 < len(data):
-            i += 2  # name (compressed pointer or label)
-            rtype  = (data[i] << 8) | data[i+1]
-            rdlen  = (data[i+8] << 8) | data[i+9]
+            i += 2  # name pointer or label start
+            rtype = (data[i] << 8) | data[i + 1]
+            rdlen = (data[i + 8] << 8) | data[i + 9]
             if rtype == 1 and rdlen == 4:  # A record
-                return ".".join(str(b) for b in data[i+10:i+14])
+                return ".".join(str(b) for b in data[i + 10:i + 14])
             i += 10 + rdlen
 
     except Exception:
@@ -156,18 +156,14 @@ def _discover_mdns(timeout: int = 5) -> str | None:
 
 def _discover_dns(gateway: str) -> str | None:
     """Try resolving common PaperCut hostnames via the gateway's DNS."""
-    # Get the local domain from the gateway (e.g. 10.10.0.1 -> try .local suffixes)
-    local_net = _local_network()
     domains = ["local"]
-    if local_net:
-        # Derive likely internal domain from reverse DNS of gateway
-        try:
-            fqdn = socket.getfqdn(gateway)
-            parts = fqdn.split(".")
-            if len(parts) > 2:
-                domains.insert(0, ".".join(parts[1:]))
-        except Exception:
-            pass
+    try:
+        fqdn = socket.getfqdn(gateway)
+        parts = fqdn.split(".")
+        if len(parts) > 2:
+            domains.insert(0, ".".join(parts[1:]))
+    except Exception:
+        pass
 
     for hostname in PAPERCUT_HOSTNAMES:
         for domain in domains:
@@ -176,7 +172,6 @@ def _discover_dns(gateway: str) -> str | None:
             if ip and ip != gateway:
                 if _port_open(ip, HTTP_PORT) or _port_open(ip, HTTPS_PORT):
                     return ip
-            # Also try system DNS
             try:
                 ip = socket.gethostbyname(fqdn)
                 if _port_open(ip, HTTP_PORT) or _port_open(ip, HTTPS_PORT):
@@ -188,7 +183,7 @@ def _discover_dns(gateway: str) -> str | None:
 
 def _scan_hosts(hosts: list, label: str) -> str | None:
     """Port-scan a list of IPs for PaperCut ports. Returns first hit or None."""
-    print(f"  {label} ({len(hosts)} hosts)", end="", flush=True)
+    print(f"    scanning {label} ({len(hosts)} hosts)...", end="", flush=True)
 
     def check(ip):
         for port in (HTTP_PORT, HTTPS_PORT):
@@ -214,67 +209,102 @@ def _scan_hosts(hosts: list, label: str) -> str | None:
     return None
 
 
-def _discover_scan(network: ipaddress.IPv4Network) -> str | None:
-    """Scan the local subnet, then all other /24 blocks in the same /8."""
-    my_ip = _get_own_ip()
+def _probe_live_24s(prefixes: list[str]) -> list[str]:
+    """Return /24 prefixes where .1 or .254 answers on a PaperCut port."""
+    live: list[str] = []
 
-    # Local subnet first
-    local_hosts = list(network.hosts())
-    # Sort so same /24 as our IP goes first
-    if my_ip:
-        my_24 = my_ip.rsplit(".", 1)[0]
-        local_hosts.sort(key=lambda h: (str(h).rsplit(".", 1)[0] != my_24))
-    result = _scan_hosts(local_hosts, f"local subnet {network}")
-    if result:
-        return result
-
-    # Expand: scan all other /24 blocks in the same /8
-    gateway = _default_gateway()
-    if not gateway:
-        return None
-
-    first_octet = gateway.split(".")[0]
-    # Build candidate /24 subnets in the same /8, excluding the local /16
-    local_second = network.network_address.packed[1]
-    candidates: list[str] = []
-    for b in range(0, 256):
-        if b == local_second:
-            continue  # skip the /16 we already scanned
-        for c in range(0, 256):
-            candidates.append(f"{first_octet}.{b}.{c}")
-
-    # Quick pre-check: ping .1 of each /24 to find live networks
-    print(f"  probing {first_octet}.0.0/8 for live networks...", end=" ", flush=True)
-
-    live_24s: list[str] = []
-
-    def probe_24(prefix):
-        if _port_open(f"{prefix}.1", HTTP_PORT, timeout=0.2) or \
-           _port_open(f"{prefix}.1", HTTPS_PORT, timeout=0.2):
-            return prefix
-        # Also try .254 in case .1 isn't the server
-        if _port_open(f"{prefix}.254", HTTP_PORT, timeout=0.2) or \
-           _port_open(f"{prefix}.254", HTTPS_PORT, timeout=0.2):
-            return prefix
+    def probe(prefix):
+        for host in (f"{prefix}.1", f"{prefix}.254"):
+            if (_port_open(host, HTTP_PORT, timeout=0.2)
+                    or _port_open(host, HTTPS_PORT, timeout=0.2)):
+                return prefix
         return None
 
     with ThreadPoolExecutor(max_workers=300) as pool:
-        for hit in pool.map(probe_24, candidates):
+        for hit in pool.map(probe, prefixes):
             if hit:
-                live_24s.append(hit)
+                live.append(hit)
+    return live
 
-    if not live_24s:
-        print("none found")
-        return None
 
-    print(f"{len(live_24s)} live network(s) found")
+def _discover_scan(networks: list[ipaddress.IPv4Network]) -> str | None:
+    """Scan local subnets, then /16, then /8 — stopping as soon as found."""
+    my_ip = _get_own_ip()
+    gateway = _default_gateway()
 
-    # Full scan of each live /24
-    for prefix in live_24s:
-        hosts = [f"{prefix}.{i}" for i in range(1, 255)]
-        result = _scan_hosts(hosts, f"{prefix}.0/24")
+    # 1. Local subnets (all detected interfaces)
+    for network in networks:
+        local_hosts = list(network.hosts())
+        if my_ip:
+            my_24 = my_ip.rsplit(".", 1)[0]
+            local_hosts.sort(key=lambda h: (str(h).rsplit(".", 1)[0] != my_24))
+        result = _scan_hosts(local_hosts, str(network))
         if result:
             return result
+
+    if not gateway:
+        return None
+
+    parts = gateway.split(".")
+    first, second = parts[0], parts[1]
+
+    scanned_prefixes = {
+        str(n.network_address).rsplit(".", 1)[0] for n in networks
+    }
+
+    # 2. Rest of the /16 (same first two octets as gateway)
+    candidates_16 = [
+        f"{first}.{second}.{c}"
+        for c in range(256)
+        if f"{first}.{second}.{c}" not in scanned_prefixes
+    ]
+    if candidates_16:
+        print(f"    probing {first}.{second}.0/16...", end=" ", flush=True)
+        live = _probe_live_24s(candidates_16)
+        if live:
+            print(f"{len(live)} candidate(s)")
+            for prefix in live:
+                result = _scan_hosts(
+                    [f"{prefix}.{i}" for i in range(1, 255)], f"{prefix}.0/24"
+                )
+                if result:
+                    return result
+        else:
+            print("no candidates")
+
+    # 3. Rest of the /8 — only within RFC 1918 private space
+    # 10.0.0.0/8 is fully private; 172.16-31.x.x and 192.168.x.x are the others.
+    # Never expand into public internet ranges.
+    private_8s = {"10"}
+    private_second = None
+    if first == "172":
+        private_second = range(16, 32)  # 172.16–31
+    elif first == "192" and second == "168":
+        pass  # already covered by /16 expansion above
+
+    if first not in private_8s and private_second is None:
+        return None  # not in a /8-expandable private range
+
+    candidates_8 = [
+        f"{first}.{b}.{c}"
+        for b in (range(256) if first == "10" else private_second)
+        if str(b) != second
+        for c in range(256)
+        if f"{first}.{b}.{c}" not in scanned_prefixes
+    ]
+    if candidates_8:
+        print(f"    probing {first}.0.0.0/8...", end=" ", flush=True)
+        live = _probe_live_24s(candidates_8)
+        if live:
+            print(f"{len(live)} candidate(s)")
+            for prefix in live:
+                result = _scan_hosts(
+                    [f"{prefix}.{i}" for i in range(1, 255)], f"{prefix}.0/24"
+                )
+                if result:
+                    return result
+        else:
+            print("no candidates")
 
     return None
 
@@ -294,28 +324,29 @@ def _get_own_ip() -> str | None:
 def discover_server() -> str | None:
     print("Searching for PaperCut server...")
 
-    print("  mDNS...", end=" ", flush=True)
-    ip = _discover_mdns(timeout=4)
-    if ip:
-        print(f"found {ip}")
-        return ip
-    print("not found")
+    if HAS_ZEROCONF:
+        print("  [1/3] mDNS broadcast...", end=" ", flush=True)
+        ip = _discover_mdns(timeout=4)
+        if ip:
+            print(f"found {ip}")
+            return ip
+        print("not found")
+    else:
+        print("  [1/3] mDNS skipped — install python3-zeroconf for faster discovery")
 
     gateway = _default_gateway()
     if gateway:
-        print(f"  DNS via gateway ({gateway})...", end=" ", flush=True)
+        print(f"  [2/3] DNS via gateway ({gateway})...", end=" ", flush=True)
         ip = _discover_dns(gateway)
         if ip:
             print(f"found {ip}")
             return ip
         print("not found")
 
-    network = _local_network()
-    if network:
-        print(f"  port scan ({network})...", end=" ", flush=True)
-        ip = _discover_scan(network)
-        if ip:
-            return ip
+    networks = _local_networks()
+    if networks:
+        print("  [3/3] port scan:")
+        return _discover_scan(networks)
 
     return None
 
@@ -323,6 +354,7 @@ def discover_server() -> str | None:
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 def _ssl_ctx() -> ssl.SSLContext:
+    # Self-signed certs are common on internal school/office networks
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -463,12 +495,22 @@ def _cups_ok() -> bool:
     return _run("which", "lpadmin")
 
 
+def _cups_papercut_printers() -> list[str]:
+    """Return names of CUPS printers whose device URI is a PaperCut IPP endpoint."""
+    result = subprocess.run(["lpstat", "-v"], capture_output=True, text=True)
+    return [
+        m.group(1)
+        for line in result.stdout.splitlines()
+        if (m := _CUPS_PC_RE.match(line))
+    ]
+
+
 def install_printers(printers: list[dict]) -> None:
     if os.geteuid() != 0:
         print("Run with sudo to install printers.")
         sys.exit(1)
     if not _cups_ok():
-        print("CUPS not found - install it first:")
+        print("CUPS not found — install it first:")
         print("  Ubuntu/Debian : sudo apt install cups")
         print("  Arch          : sudo pacman -S cups")
         print("  Fedora        : sudo dnf install cups")
@@ -495,20 +537,19 @@ def install_printers(printers: list[dict]) -> None:
         print("Open any application and select a printer to test.")
 
 
-def remove_printers(printers: list[dict]) -> None:
+def remove_printers(names: list[str]) -> None:
     if os.geteuid() != 0:
         print("Run with sudo to remove printers.")
         sys.exit(1)
     ok = 0
-    for p in printers:
-        name = _cups_name(p)
+    for name in names:
         print(f"  Removing {name}...", end=" ", flush=True)
         if _run("lpadmin", "-x", name):
             print("removed")
             ok += 1
         else:
-            print("not found")
-    print(f"\n{ok} printer(s) removed.")
+            print("FAILED")
+    print(f"\n{ok}/{len(names)} printer(s) removed.")
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -521,7 +562,7 @@ def main() -> None:
     parser.add_argument("--server", metavar="HOST/IP",
                         help="PaperCut server address (skip auto-discovery)")
     parser.add_argument("--remove", action="store_true",
-                        help="remove previously installed printers")
+                        help="remove PaperCut printers previously installed by this tool")
     parser.add_argument("--pcap", metavar="FILE", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -530,38 +571,43 @@ def main() -> None:
         if not printers:
             print("No printers found in capture.")
             sys.exit(1)
-    else:
-        if args.remove:
-            result = subprocess.run(["lpstat", "-p"], capture_output=True, text=True)
-            names  = re.findall(r"printer (\S+)", result.stdout)
-            if not names:
-                print("No printers found in CUPS.")
-                sys.exit(0)
-            print(f"Removing {len(names)} printer(s):")
-            for n in names:
-                print(f"  {n}")
-            remove_printers([{"name": n, "server": "", "port": 0,
-                               "scheme": "", "user_id": 0, "token": ""} for n in names])
-            return
+        for p in printers:
+            print(f"  {p['name']}")
+        print()
+        install_printers(printers)
+        return
 
-        server = args.server
-        if not server:
-            server = discover_server()
-        if not server:
-            server = input("Server IP or hostname: ").strip()
-        if not server:
-            print("No server found.")
-            sys.exit(1)
+    if args.remove:
+        names = _cups_papercut_printers()
+        if not names:
+            print("No PaperCut printers found in CUPS.")
+            sys.exit(0)
+        print(f"Removing {len(names)} PaperCut printer(s):")
+        for n in names:
+            print(f"  {n}")
+        print()
+        remove_printers(names)
+        return
 
-        username = input("Username: ").strip()
-        password = getpass.getpass("Password: ")
+    server = args.server
+    if not server:
+        server = discover_server()
+    if not server:
+        server = input("Server IP or hostname: ").strip()
+    if not server:
+        print("No server found.")
+        sys.exit(1)
 
-        print("Fetching printer list...", end=" ", flush=True)
-        printers = fetch_printers(server, username, password)
-        if not printers:
-            print("failed.\nCould not fetch printers - check credentials and server address.")
-            sys.exit(1)
-        print(f"{len(printers)} printer(s) found\n")
+    username = input("Username: ").strip()
+    password = getpass.getpass("Password: ")
+
+    print("Fetching printer list...", end=" ", flush=True)
+    printers = fetch_printers(server, username, password)
+    if not printers:
+        print("failed.")
+        print("Could not fetch printers — check credentials and server address.")
+        sys.exit(1)
+    print(f"{len(printers)} printer(s) found\n")
 
     for p in printers:
         print(f"  {p['name']}")
