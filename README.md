@@ -129,6 +129,8 @@ Your CUPS service may not be running. Start it with:
 sudo systemctl start cups
 ```
 
+For more detail — including how to find your server address and notes on VLAN-segmented school networks — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
 ---
 
 ## Contributing

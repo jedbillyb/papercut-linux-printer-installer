@@ -1,0 +1,101 @@
+# Troubleshooting
+
+## Auto-discovery fails
+
+Auto-discovery works by scanning your local network for a PaperCut server. It can fail for a few reasons:
+
+### You need to be on the school network
+
+Discovery requires your machine to be on the **same network segment** as the print server. This means:
+
+- **On campus Wi-Fi or a wired connection** — discovery should work
+- **At home / off-campus** — discovery will not work; you need to specify the server address manually (see below)
+- **On a guest or BYOD Wi-Fi network** — many schools isolate these networks from internal infrastructure using VLANs, which will block discovery even if you're physically on campus
+
+If your school uses strict VLAN segmentation (common in universities and larger secondary schools), the print server may simply be unreachable from the student network. In that case, ask IT whether student devices are permitted to print directly via IPP.
+
+---
+
+## Finding your PaperCut server address
+
+### Option 1 — Ask IT
+
+The simplest option. Ask your school's IT helpdesk for the PaperCut server IP address or hostname. They may know it as the "print server address."
+
+### Option 2 — Find it on a Windows machine that already has PaperCut installed
+
+On a Windows PC that can already print via PaperCut, open a Command Prompt and run:
+
+```
+nslookup papercut
+nslookup print
+nslookup printing
+```
+
+If any of these return an IP address, that is your server. You can also check:
+
+```
+ipconfig /all
+```
+
+Look for a DNS suffix (e.g. `school.internal`) and try:
+
+```
+nslookup papercut.school.internal
+```
+
+### Option 3 — Check the PaperCut client config on Windows
+
+If the PaperCut client is installed on a Windows machine, the server address is often stored in:
+
+```
+C:\Program Files\PaperCut MF Client\client.properties
+```
+
+or
+
+```
+C:\Program Files (x86)\PaperCut MF Client\client.properties
+```
+
+Open it in Notepad and look for a line like `server-ip=10.10.5.19`.
+
+---
+
+## Using `--server` to skip discovery
+
+Once you have the server address, pass it directly:
+
+```bash
+sudo python3 papercut.py --server 10.10.5.19
+# or using a hostname:
+sudo python3 papercut.py --server print.school.internal
+```
+
+This bypasses all discovery and goes straight to authentication.
+
+---
+
+## Printers install but jobs don't print
+
+- Make sure your account has print credit or quota remaining in PaperCut
+- Check that the CUPS service is running: `sudo systemctl start cups`
+- Try printing a test page from CUPS: open `http://localhost:631` in a browser
+
+## `lpadmin` fails during install
+
+CUPS may not be installed or running:
+
+```bash
+# Install CUPS (see README for your distro)
+sudo systemctl enable --now cups
+```
+
+## Printers show as unavailable after install
+
+Run:
+
+```bash
+sudo cupsenable <printer-name>
+sudo cupsaccept <printer-name>
+```
