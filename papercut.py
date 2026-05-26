@@ -197,7 +197,7 @@ def _scan_hosts(hosts: list, label: str) -> str | None:
         done = 0
         for future in as_completed(futures):
             spin = _SPINNER[done % len(_SPINNER)]
-            print(f"\r{prefix} {spin}", end="", flush=True)
+            print(f"\r{prefix}{spin}", end="", flush=True)
             done += 1
             result = future.result()
             if result:
@@ -227,7 +227,7 @@ def _probe_live_24s(prefixes: list[str], label: str) -> list[str]:
         done = 0
         for future in as_completed(futures):
             spin = _SPINNER[done % len(_SPINNER)]
-            print(f"\r{pfx} {spin}", end="", flush=True)
+            print(f"\r{pfx}{spin}", end="", flush=True)
             done += 1
             hit = future.result()
             if hit:
@@ -331,7 +331,7 @@ def discover_server() -> str | None:
     if HAS_ZEROCONF:
         zc, found = _start_mdns()
         for i in range(40):  # 4 s in 100 ms ticks
-            print(f"\r{mdns_msg} {_SPINNER[i % len(_SPINNER)]}", end="", flush=True)
+            print(f"\r{mdns_msg}{_SPINNER[i % len(_SPINNER)]}", end="", flush=True)
             time.sleep(0.1)
             if found:
                 break
@@ -350,7 +350,7 @@ def discover_server() -> str | None:
             future = pool.submit(_discover_dns, gateway)
             i = 0
             while not future.done():
-                print(f"\r{msg} {_SPINNER[i % len(_SPINNER)]}", end="", flush=True)
+                print(f"\r{msg}{_SPINNER[i % len(_SPINNER)]}", end="", flush=True)
                 i += 1
                 time.sleep(0.1)
         ip = future.result()
