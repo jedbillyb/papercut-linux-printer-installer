@@ -13,8 +13,8 @@ Usage:
 
 import argparse
 import getpass
+import http.cookiejar
 import ipaddress
-import json
 import os
 import re
 import socket
@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -57,9 +58,6 @@ PAPERCUT_HOSTNAMES = [
     "print",
     "printing",
 ]
-
-AUTH_PATHS    = ["/api/auth", "/api/v1/auth", "/auth", "/api/authenticate"]
-PRINTER_PATHS = ["/api/printers", "/api/v1/printers", "/printers"]
 
 TOKEN_RE = re.compile(
     r"(https?)://([^/:]+)(?::\d+)?/printers/([^/]+)/users/(\d+)/([0-9a-f]{64})"
@@ -354,53 +352,89 @@ def _ssl_ctx() -> ssl.SSLContext:
     return ctx
 
 
-def _post(url: str, data: dict) -> tuple[int, dict | None]:
+def _make_opener(jar: http.cookiejar.CookieJar) -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=_ssl_ctx()),
+        urllib.request.HTTPCookieProcessor(jar),
+    )
+
+
+def _form_login(opener: urllib.request.OpenerDirector,
+                base: str, username: str, password: str) -> str:
+    """POST form credentials to /user. Returns response HTML."""
+    url = f"{base}/user"
+    body = urllib.parse.urlencode({
+        "inputUsername": username,
+        "inputPassword": password,
+    }).encode()
     _dbg(f"POST {url}")
-    body = json.dumps(data).encode()
-    req  = urllib.request.Request(url, data=body,
-                                   headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=body,
+                                  headers={"Content-Type": "application/x-www-form-urlencoded"})
     try:
-        with urllib.request.urlopen(req, context=_ssl_ctx(), timeout=5) as r:
-            result = json.loads(r.read())
-            _dbg(f"  → {r.status} {json.dumps(result)[:300]}")
-            return r.status, result
+        with opener.open(req, timeout=10) as r:
+            html = r.read().decode("utf-8", errors="replace")
+            _dbg(f"  → {r.status} ({len(html)} bytes)")
+            return html
     except urllib.error.HTTPError as e:
-        _dbg(f"  → {e.code} (HTTP error)")
-        return e.code, None
+        _dbg(f"  → {e.code}")
+        return ""
     except Exception as e:
         _dbg(f"  → 0 ({e})")
-        return 0, None
+        return ""
 
 
-def _get(url: str, token: str | None = None) -> tuple[int, any]:
+def _session_get(opener: urllib.request.OpenerDirector, url: str) -> tuple[int, str]:
     _dbg(f"GET {url}")
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, context=_ssl_ctx(), timeout=5) as r:
-            result = json.loads(r.read())
-            _dbg(f"  → {r.status} {json.dumps(result)[:300]}")
-            return r.status, result
+        with opener.open(url, timeout=10) as r:
+            html = r.read().decode("utf-8", errors="replace")
+            _dbg(f"  → {r.status} ({len(html)} bytes)")
+            return r.status, html
     except urllib.error.HTTPError as e:
-        _dbg(f"  → {e.code} (HTTP error)")
-        return e.code, None
+        _dbg(f"  → {e.code}")
+        return e.code, ""
     except Exception as e:
         _dbg(f"  → 0 ({e})")
-        return 0, None
+        return 0, ""
+
+
+def _xmlrpc_printers(opener: urllib.request.OpenerDirector,
+                     base: str, password: str) -> list[dict]:
+    """Try PaperCut MF XML-RPC API; return any printers found in the response."""
+    url = f"{base}/rpc/api/xmlrpc"
+    body = (
+        '<?xml version="1.0"?><methodCall>'
+        '<methodName>api.listPrinters</methodName><params>'
+        f'<param><value><string>{password}</string></value></param>'
+        '<param><value><int>0</int></value></param>'
+        '<param><value><int>200</int></value></param>'
+        '</params></methodCall>'
+    ).encode()
+    _dbg(f"POST {url} (XML-RPC listPrinters)")
+    req = urllib.request.Request(url, data=body,
+                                  headers={"Content-Type": "text/xml"})
+    try:
+        with opener.open(req, timeout=10) as r:
+            xml = r.read().decode("utf-8", errors="replace")
+            _dbg(f"  → {r.status} ({len(xml)} bytes)")
+            return [_printer_from_match(m) for m in TOKEN_RE.finditer(xml)]
+    except Exception as e:
+        _dbg(f"  → 0 ({e})")
+        return []
+
+
+def _dedup(printers: list[dict]) -> list[dict]:
+    seen: set[tuple] = set()
+    result = []
+    for p in printers:
+        key = (p["server"], p["name"], p["user_id"])
+        if key not in seen:
+            seen.add(key)
+            result.append(p)
+    return result
 
 
 # ── PaperCut API ──────────────────────────────────────────────────────────────
-
-def _auth(base: str, username: str, password: str) -> tuple[str | None, dict | None]:
-    creds = {"username": username, "password": password}
-    for path in AUTH_PATHS:
-        status, body = _post(base + path, creds)
-        if status == 200 and body:
-            token = (body.get("token") or body.get("authToken")
-                     or body.get("access_token") or body.get("sessionToken"))
-            return token, body
-    return None, None
-
 
 def _printer_from_match(m: re.Match) -> dict:
     scheme, host, raw_name, uid, token = m.groups()
@@ -414,50 +448,31 @@ def _printer_from_match(m: re.Match) -> dict:
     }
 
 
-def _parse_printer_list(body: any, server: str, scheme: str,
-                         user_id: int | None) -> list[dict]:
-    ipp_port = IPP_SSL_PORT if scheme == "https" else IPP_PORT
-    printers = []
-    items = body if isinstance(body, list) else body.get("printers", [])
-    for item in items:
-        for field in ("uri", "ippUri", "url"):
-            m = TOKEN_RE.search(str(item.get(field, "")))
-            if m:
-                printers.append(_printer_from_match(m))
-                break
-        else:
-            name  = item.get("name") or item.get("printerName") or item.get("displayName", "")
-            token = item.get("token") or item.get("userToken") or item.get("authToken", "")
-            uid   = int(item.get("userId") or item.get("user_id") or user_id or 0)
-            if name and token:
-                printers.append({"name": name, "server": server, "port": ipp_port,
-                                  "scheme": scheme, "user_id": uid, "token": token})
-    return printers
-
-
 def fetch_printers(server: str, username: str, password: str) -> list[dict]:
     for scheme, port in [("https", API_SSL_PORT), ("http", API_PORT)]:
         base = f"{scheme}://{server}:{port}"
-        auth_token, user_info = _auth(base, username, password)
-        if user_info is None:
-            continue
+        jar = http.cookiejar.CookieJar()
+        opener = _make_opener(jar)
 
-        raw = json.dumps(user_info)
-        printers = [_printer_from_match(m) for m in TOKEN_RE.finditer(raw)]
+        # Step 1: form POST login — follows the redirect and lands on the user page
+        login_html = _form_login(opener, base, username, password)
+        jsid = next((c.value for c in jar if c.name == "JSESSIONID"), None)
+        _dbg(f"  JSESSIONID={jsid}")
+
+        # Step 2: collect HTML from the login response + additional authenticated pages
+        all_html = login_html
+        for path in ("/user", "/user/printers"):
+            _, html = _session_get(opener, base + path)
+            all_html += html
+
+        printers = _dedup([_printer_from_match(m) for m in TOKEN_RE.finditer(all_html)])
         if printers:
             return printers
 
-        user_id = (user_info.get("userId") or user_info.get("id")
-                   or user_info.get("user_id"))
-        paths = PRINTER_PATHS[:]
-        if user_id:
-            paths = [f"{p}/users/{user_id}" for p in PRINTER_PATHS] + paths
-        for path in paths:
-            status, body = _get(base + path, auth_token)
-            if status == 200 and body:
-                found = _parse_printer_list(body, server, scheme, user_id)
-                if found:
-                    return found
+        # Step 3: XML-RPC fallback
+        printers = _xmlrpc_printers(opener, base, password)
+        if printers:
+            return _dedup(printers)
 
     return []
 
