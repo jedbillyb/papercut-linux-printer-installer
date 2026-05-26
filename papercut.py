@@ -405,7 +405,11 @@ def _form_login(opener: urllib.request.OpenerDirector,
     _dbg(f"POST {post_url} (fields: {list(fields.keys())})")
     body = urllib.parse.urlencode(fields).encode()
     req  = urllib.request.Request(post_url, data=body,
-                                   headers={"Content-Type": "application/x-www-form-urlencoded"})
+                                   headers={
+                                       "Content-Type": "application/x-www-form-urlencoded",
+                                       "Referer":      f"{base}/user",
+                                       "Origin":       base,
+                                   })
     try:
         with opener.open(req, timeout=10) as r:
             html = r.read().decode("utf-8", errors="replace")
