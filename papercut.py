@@ -12,9 +12,8 @@ Usage:
 """
 
 import argparse
-import getpass
-import http.cookiejar
 import ipaddress
+import json
 import os
 import re
 import socket
@@ -23,7 +22,6 @@ import subprocess
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -352,138 +350,7 @@ def _ssl_ctx() -> ssl.SSLContext:
     return ctx
 
 
-def _make_opener(jar: http.cookiejar.CookieJar) -> urllib.request.OpenerDirector:
-    return urllib.request.build_opener(
-        urllib.request.HTTPSHandler(context=_ssl_ctx()),
-        urllib.request.HTTPCookieProcessor(jar),
-    )
-
-
-def _form_login(opener: urllib.request.OpenerDirector,
-                base: str, username: str, password: str) -> tuple[str, str | None]:
-    """GET /user to scrape the login form, then POST to its action URL.
-    Returns (response_html, jsessionid_from_action_url)."""
-    # Step 1: fetch the login page to get the real form action and hidden fields
-    _dbg(f"GET {base}/user")
-    try:
-        with opener.open(f"{base}/user", timeout=10) as r:
-            login_html = r.read().decode("utf-8", errors="replace")
-            _dbg(f"  → {r.status} ({len(login_html)} bytes)")
-    except Exception as e:
-        _dbg(f"  → 0 ({e})")
-        return "", None
-
-    # Parse form action (may be relative like /app;jsessionid=...)
-    action_m = re.search(r'<form[^>]+action=["\']([^"\']+)["\']', login_html, re.IGNORECASE)
-    if action_m:
-        action = action_m.group(1)
-        # Resolve relative action against base
-        if action.startswith("/"):
-            post_url = f"{base}{action}"
-        elif action.startswith("http"):
-            post_url = action
-        else:
-            post_url = f"{base}/{action}"
-    else:
-        post_url = f"{base}/user"
-    _dbg(f"  form action → {post_url}")
-
-    jsid_m = re.search(r';jsessionid=([^?&"\']+)', post_url)
-    url_jsid = jsid_m.group(1) if jsid_m else None
-    _dbg(f"  jsessionid from action URL = {url_jsid}")
-
-    # Collect all hidden input fields
-    fields: dict[str, str] = {}
-    for m in re.finditer(
-        r'<input[^>]+type=["\']hidden["\'][^>]*>', login_html, re.IGNORECASE
-    ):
-        tag = m.group(0)
-        name_m  = re.search(r'\bname=["\']([^"\']+)["\']',  tag, re.IGNORECASE)
-        value_m = re.search(r'\bvalue=["\']([^"\']*)["\']', tag, re.IGNORECASE)
-        if name_m:
-            fields[name_m.group(1)] = value_m.group(1) if value_m else ""
-
-    fields["inputUsername"] = username
-    fields["inputPassword"] = password
-    fields["$Submit$0"]     = "Log in"
-
-    _dbg(f"POST {post_url} (fields: {list(fields.keys())})")
-    body = urllib.parse.urlencode(fields).encode()
-    req  = urllib.request.Request(post_url, data=body,
-                                   headers={
-                                       "Content-Type": "application/x-www-form-urlencoded",
-                                       "Referer":      f"{base}/user",
-                                       "Origin":       base,
-                                   })
-    try:
-        with opener.open(req, timeout=10) as r:
-            html = r.read().decode("utf-8", errors="replace")
-            _dbg(f"  → {r.status} ({len(html)} bytes)")
-            _dbg(f"  login page preview: {html[:500]}")
-            with open("/tmp/pc_login.html", "w", errors="replace") as fh:
-                fh.write(html)
-            _dbg("  full response written to /tmp/pc_login.html")
-            return html, url_jsid
-    except urllib.error.HTTPError as e:
-        _dbg(f"  → {e.code}")
-        return "", url_jsid
-    except Exception as e:
-        _dbg(f"  → 0 ({e})")
-        return "", url_jsid
-
-
-def _session_get(opener: urllib.request.OpenerDirector, url: str) -> tuple[int, str]:
-    _dbg(f"GET {url}")
-    try:
-        with opener.open(url, timeout=10) as r:
-            html = r.read().decode("utf-8", errors="replace")
-            _dbg(f"  → {r.status} ({len(html)} bytes)")
-            return r.status, html
-    except urllib.error.HTTPError as e:
-        _dbg(f"  → {e.code}")
-        return e.code, ""
-    except Exception as e:
-        _dbg(f"  → 0 ({e})")
-        return 0, ""
-
-
-def _xmlrpc_printers(opener: urllib.request.OpenerDirector,
-                     base: str, password: str) -> list[dict]:
-    """Try PaperCut MF XML-RPC API; return any printers found in the response."""
-    url = f"{base}/rpc/api/xmlrpc"
-    body = (
-        '<?xml version="1.0"?><methodCall>'
-        '<methodName>api.listPrinters</methodName><params>'
-        f'<param><value><string>{password}</string></value></param>'
-        '<param><value><int>0</int></value></param>'
-        '<param><value><int>200</int></value></param>'
-        '</params></methodCall>'
-    ).encode()
-    _dbg(f"POST {url} (XML-RPC listPrinters)")
-    req = urllib.request.Request(url, data=body,
-                                  headers={"Content-Type": "text/xml"})
-    try:
-        with opener.open(req, timeout=10) as r:
-            xml = r.read().decode("utf-8", errors="replace")
-            _dbg(f"  → {r.status} ({len(xml)} bytes)")
-            return [_printer_from_match(m) for m in TOKEN_RE.finditer(xml)]
-    except Exception as e:
-        _dbg(f"  → 0 ({e})")
-        return []
-
-
-def _dedup(printers: list[dict]) -> list[dict]:
-    seen: set[tuple] = set()
-    result = []
-    for p in printers:
-        key = (p["server"], p["name"], p["user_id"])
-        if key not in seen:
-            seen.add(key)
-            result.append(p)
-    return result
-
-
-# ── PaperCut API ──────────────────────────────────────────────────────────────
+# ── Mobility Print API ────────────────────────────────────────────────────────
 
 def _printer_from_match(m: re.Match) -> dict:
     scheme, host, raw_name, uid, token = m.groups()
@@ -497,33 +364,25 @@ def _printer_from_match(m: re.Match) -> dict:
     }
 
 
-def fetch_printers(server: str, username: str, password: str) -> list[dict]:
-    for scheme, port in [("https", API_SSL_PORT), ("http", API_PORT)]:
-        base = f"{scheme}://{server}:{port}"
-        jar = http.cookiejar.CookieJar()
-        opener = _make_opener(jar)
-
-        # Step 1: form POST login — follows the redirect and lands on the user page
-        login_html, url_jsid = _form_login(opener, base, username, password)
-        cookie_jsid = next((c.value for c in jar if c.name == "JSESSIONID"), None)
-        _dbg(f"  jsessionid (url={url_jsid}, cookie={cookie_jsid})")
-
-        # Step 2: collect HTML from the login response + additional authenticated pages
-        jsid_suffix = f";jsessionid={cookie_jsid}" if cookie_jsid else ""
-        all_html = login_html
-        for path in ("/app", "/app/printers"):
-            _, html = _session_get(opener, base + path + jsid_suffix)
-            all_html += html
-
-        printers = _dedup([_printer_from_match(m) for m in TOKEN_RE.finditer(all_html)])
-        if printers:
-            return printers
-
-        # Step 3: XML-RPC fallback
-        printers = _xmlrpc_printers(opener, base, password)
-        if printers:
-            return _dedup(printers)
-
+def fetch_printers(server: str) -> list[dict]:
+    for scheme, port in [("http", IPP_PORT), ("https", IPP_SSL_PORT)]:
+        url = f"{scheme}://{server}:{port}/printers"
+        _dbg(f"GET {url}")
+        ctx = _ssl_ctx() if scheme == "https" else None
+        try:
+            with urllib.request.urlopen(url, context=ctx, timeout=10) as r:
+                items = json.loads(r.read())
+                _dbg(f"  → {r.status} ({len(items)} printers)")
+                return [
+                    {"name": item["name"], "server": server,
+                     "port": port, "scheme": scheme}
+                    for item in items
+                    if item.get("name")
+                ]
+        except urllib.error.HTTPError as e:
+            _dbg(f"  → {e.code}")
+        except Exception as e:
+            _dbg(f"  → 0 ({e})")
     return []
 
 
@@ -549,7 +408,10 @@ def fetch_from_pcap(path: str) -> list[dict]:
 def _ipp_url(p: dict) -> str:
     scheme = "ipps" if p["scheme"] == "https" else "ipp"
     name   = p["name"].replace(" ", "+")
-    return f"{scheme}://{p['server']}:{p['port']}/printers/{name}/users/{p['user_id']}/{p['token']}"
+    uri    = f"{scheme}://{p['server']}:{p['port']}/printers/{name}"
+    if p.get("token"):
+        uri += f"/users/{p['user_id']}/{p['token']}"
+    return uri
 
 
 def _cups_name(p: dict) -> str:
@@ -673,14 +535,11 @@ def main() -> None:
         print("No server found. Use --server <ip> to specify it manually, or see TROUBLESHOOTING.md.")
         sys.exit(1)
 
-    username = input("Username: ").strip()
-    password = getpass.getpass("Password: ")
-
     print("Fetching printer list...", end=" ", flush=True)
-    printers = fetch_printers(server, username, password)
+    printers = fetch_printers(server)
     if not printers:
         print("failed.")
-        print("Could not fetch printers — check credentials and server address.")
+        print("Could not fetch printers — check server address.")
         sys.exit(1)
     print(f"{len(printers)} printer(s) found\n")
 
