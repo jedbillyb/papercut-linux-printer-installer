@@ -6,7 +6,7 @@
 [![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)](https://kernel.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Automatically discovers your PaperCut print server, authenticates with your school credentials, and installs all your printers into CUPS as standard IPP Everywhere queues. Works on any distro that runs CUPS.
+Automatically discovers your PaperCut Mobility Print server and installs all available printers into CUPS as standard IPP Everywhere queues. Works on any distro that runs CUPS. Your credentials are entered once by your print application the first time you print.
 
 ---
 
@@ -56,7 +56,7 @@ No build step required - `papercut.py` is a single self-contained script.
 ## Usage
 
 ```bash
-# Auto-discover server, authenticate, and install all printers
+# Auto-discover server and install all printers
 sudo python3 papercut.py
 
 # Skip discovery and specify the server directly
@@ -66,8 +66,6 @@ sudo python3 papercut.py --server 10.10.5.19
 sudo python3 papercut.py --remove
 ```
 
-The script prompts for your school username and password. Credentials are used only for the API request and are never stored.
-
 ### Example output
 
 ```
@@ -76,8 +74,6 @@ Searching for PaperCut server...
   [2/3] DNS via gateway (10.10.0.1)... not found
   [3/3] port scan:
     scanning 10.10.0.0/20 (4094 hosts).......... found 10.10.5.19
-Username: jsmith
-Password:
 Fetching printer list... 4 printer(s) found
 
   Library Mono
@@ -90,7 +86,26 @@ Fetching printer list... 4 printer(s) found
   (new)    Staff-Room... done
   (new)    Admin-Office... done
 
-4/4 printers installed.
+4/4 printers ready.
+Open any application and select a printer to test.
+```
+
+Re-running the script is safe — already-installed printers are skipped:
+
+```
+Fetching printer list... 4 printer(s) found
+
+  Library Mono
+  Library Colour
+  Staff Room
+  Admin Office
+
+  (skip)   Library-Mono... already installed
+  (skip)   Library-Colour... already installed
+  (skip)   Staff-Room... already installed
+  (skip)   Admin-Office... already installed
+
+4/4 printers ready.
 Open any application and select a printer to test.
 ```
 
@@ -98,13 +113,13 @@ Open any application and select a printer to test.
 
 ## How it works
 
-PaperCut exposes each printer as a standard IPP endpoint with a per-user auth token embedded in the URL. This script:
+PaperCut Mobility Print exposes each printer as a standard IPP endpoint. This script:
 
 1. **Discovers** the server using three methods in order:
    - mDNS broadcast (`_pc-printer-discovery._tcp`, `_ipp._tcp`, `_ipps._tcp`)
    - DNS lookup of common PaperCut hostnames via your default gateway
-   - Port scan - local subnet first, then the /16, then the full /8 if needed
-2. **Authenticates** against the PaperCut REST API with your credentials
+   - Port scan — local and explicitly-routed subnets first, then the rest of the /16 matching the gateway
+2. **Fetches** the printer list from the Mobility Print API (no credentials required at install time)
 3. **Installs** each printer into CUPS via `lpadmin` using the `everywhere` (driverless) driver
 
 ---

@@ -77,7 +77,7 @@ def _default_gateway() -> str | None:
 
 
 def _local_networks() -> list[ipaddress.IPv4Network]:
-    """Return all non-loopback local subnets (handles multiple interfaces)."""
+    """Return reachable subnets: interface networks plus explicitly routed prefixes."""
     nets: list[ipaddress.IPv4Network] = []
     try:
         result = subprocess.run(["ip", "addr"], capture_output=True, text=True)
@@ -85,6 +85,20 @@ def _local_networks() -> list[ipaddress.IPv4Network]:
             net = ipaddress.IPv4Interface(m.group(1)).network
             if not net.is_loopback and net not in nets:
                 nets.append(net)
+    except Exception:
+        pass
+    try:
+        result = subprocess.run(["ip", "route"], capture_output=True, text=True)
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if not parts or parts[0] in ("default", "broadcast", "local"):
+                continue
+            try:
+                net = ipaddress.IPv4Network(parts[0], strict=False)
+                if not net.is_loopback and net not in nets and net.prefixlen >= 16:
+                    nets.append(net)
+            except ValueError:
+                pass
     except Exception:
         pass
     return nets
@@ -169,16 +183,17 @@ def _discover_dns(gateway: str) -> str | None:
     except Exception:
         pass
 
+    _pc_ports = (API_PORT, API_SSL_PORT, IPP_PORT, IPP_SSL_PORT)
     for hostname in PAPERCUT_HOSTNAMES:
         for domain in domains:
             fqdn = f"{hostname}.{domain}"
             ip = _dns_query(gateway, fqdn)
             if ip and ip != gateway:
-                if _port_open(ip, API_PORT) or _port_open(ip, API_SSL_PORT):
+                if any(_port_open(ip, p) for p in _pc_ports):
                     return ip
             try:
                 ip = socket.gethostbyname(fqdn)
-                if _port_open(ip, API_PORT) or _port_open(ip, API_SSL_PORT):
+                if any(_port_open(ip, p) for p in _pc_ports):
                     return ip
             except Exception:
                 pass
@@ -192,7 +207,7 @@ def _scan_hosts(hosts: list, label: str) -> str | None:
     prefix = f"    scanning {label} ({len(hosts)} hosts)"
 
     def check(ip):
-        for port in (API_PORT, API_SSL_PORT):
+        for port in (API_PORT, API_SSL_PORT, IPP_PORT, IPP_SSL_PORT):
             if _port_open(ip, port):
                 return ip
         return None
@@ -222,9 +237,9 @@ def _probe_live_24s(prefixes: list[str], label: str) -> list[str]:
 
     def probe(prefix):
         for host in (f"{prefix}.1", f"{prefix}.254"):
-            if (_port_open(host, API_PORT, timeout=0.2)
-                    or _port_open(host, API_SSL_PORT, timeout=0.2)):
-                return prefix
+            for port in (API_PORT, API_SSL_PORT, IPP_PORT, IPP_SSL_PORT):
+                if _port_open(host, port, timeout=0.2):
+                    return prefix
         return None
 
     with ThreadPoolExecutor(max_workers=300) as pool:
@@ -448,12 +463,14 @@ def install_printers(printers: list[dict]) -> None:
         print("  Void          : sudo xbps-install cups")
         sys.exit(1)
 
-    ok = 0
+    ok = skipped = 0
     for p in printers:
-        name   = _cups_name(p)
-        exists = _run("lpstat", "-p", name)
-        label  = "(update)" if exists else "(new)   "
-        print(f"  {label} {name}...", end=" ", flush=True)
+        name = _cups_name(p)
+        if _run("lpstat", "-p", name):
+            print(f"  (skip)   {name}... already installed")
+            skipped += 1
+            continue
+        print(f"  (new)    {name}...", end=" ", flush=True)
         if _run("lpadmin", "-p", name, "-v", _ipp_url(p),
                 "-m", "everywhere", "-E", "-D", p["name"]):
             _run("cupsenable", name)
@@ -463,8 +480,9 @@ def install_printers(printers: list[dict]) -> None:
         else:
             print("FAILED")
 
-    print(f"\n{ok}/{len(printers)} printers installed.")
-    if ok:
+    ready = ok + skipped
+    print(f"\n{ready}/{len(printers)} printers ready.")
+    if ready:
         print("Open any application and select a printer to test.")
 
 

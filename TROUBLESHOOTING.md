@@ -72,7 +72,7 @@ sudo python3 papercut.py --server 10.10.5.19
 sudo python3 papercut.py --server print.school.internal
 ```
 
-This bypasses all discovery and goes straight to authentication.
+This bypasses all discovery and goes straight to fetching the printer list.
 
 ---
 
