@@ -1,7 +1,7 @@
 # PaperCut Linux Printer Installer
 
 Open-source Linux installer for PaperCut-managed print queues. No proprietary
-PaperCut client required — uses Linux's built-in CUPS with standard IPP.
+PaperCut client required - uses Linux's built-in CUPS with standard IPP.
 
 ## How it works
 
@@ -30,7 +30,7 @@ adds the printers to CUPS using driverless (IPP Everywhere) printing with PDF.
 
 ## Workflow
 
-### Step 1 — Capture the printer traffic
+### Step 1 - Capture the printer traffic
 
 You need a network capture that includes the PaperCut discovery traffic.
 The easiest way is from any Windows or Mac machine already set up with PaperCut.
@@ -38,11 +38,11 @@ The easiest way is from any Windows or Mac machine already set up with PaperCut.
 1. Install [Wireshark](https://www.wireshark.org/) on the Windows/Mac machine
 2. Start a capture on the active network interface
 3. Open **Settings → Bluetooth & devices → Printers** (Windows) or  
-   **System Settings → Printers** (Mac) — this triggers the PaperCut client to query the server
+   **System Settings → Printers** (Mac) - this triggers the PaperCut client to query the server
 4. Wait a few seconds, then stop the capture
 5. **File → Export as pcapng** and copy the file to your Linux machine
 
-### Step 2 — Extract printer config
+### Step 2 - Extract printer config
 
 ```bash
 python3 discover.py --pcap capture.pcapng
@@ -50,7 +50,7 @@ python3 discover.py --pcap capture.pcapng
 
 This creates `printers.json` with the server address, user ID, and per-printer tokens.
 
-### Step 3 — Install the printers
+### Step 3 - Install the printers
 
 ```bash
 sudo python3 install.py --config printers.json
@@ -116,20 +116,20 @@ re-running `install.py` will update the existing CUPS queues.
 | HTTPS port | 9164 |
 
 The per-user token in each URL is issued by PaperCut and identifies the user
-for print accounting and release. It acts as a bearer credential — no
+for print accounting and release. It acts as a bearer credential - no
 username/password is sent at print time.
 
 ---
 
 ## Troubleshooting
 
-**`tshark: command not found`** — install `wireshark-cli` or `wireshark` package.
+**`tshark: command not found`** - install `wireshark-cli` or `wireshark` package.
 
-**No printers found in capture** — make sure the capture includes traffic on
+**No printers found in capture** - make sure the capture includes traffic on
 port 9163. In Wireshark you can verify with the filter `tcp.port == 9163`.
 
-**Server unreachable** — you must be on the same network (or VPN) as the
+**Server unreachable** - you must be on the same network (or VPN) as the
 PaperCut server. The server hostname is stored in `printers.json`.
 
-**`lpadmin: IPP Everywhere` error** — your CUPS version may be too old.
+**`lpadmin: IPP Everywhere` error** - your CUPS version may be too old.
 Update to CUPS 2.2+ or try installing `printer-driver-cups-pdf` as a fallback.
