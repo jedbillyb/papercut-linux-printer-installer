@@ -1,3 +1,5 @@
+<p align="right"><a href="https://jedbillyb.com"><img src="https://img.shields.io/badge/jedbillyb.com-000?style=for-the-badge&logo=archlinux&logoColor=blue" /></a></p>
+
 # PaperCut Linux Printer Installer
 
 > Add your school's PaperCut printers to Linux in one command - no proprietary client needed.
@@ -142,3 +144,9 @@ Pull requests are welcome. Please keep changes focused - one fix or feature per 
 ## License
 
 [MIT](LICENSE)
+
+---
+
+<div align="center">
+<sub>MIT © <a href="https://jedbillyb.com">jedbillyb</a> · Made with ❤️</sub>
+</div>
