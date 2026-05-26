@@ -3,6 +3,12 @@
 Adds your school's PaperCut printers to Linux in one command. No proprietary
 client required - uses standard IPP and CUPS.
 
+## Get the script
+
+```bash
+git clone https://github.com/jedbillyb/papercut-linux-printer-installer && cd papercut-linux-printer-installer
+```
+
 ## Requirements
 
 - Linux with CUPS installed
