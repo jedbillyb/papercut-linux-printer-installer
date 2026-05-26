@@ -181,7 +181,7 @@ def _discover_dns(gateway: str) -> str | None:
     return None
 
 
-_SPINNER = ["|", "/", "-", "\\"]
+_SPINNER = [".  ", ".. ", "...", ".. "]
 
 def _scan_hosts(hosts: list, label: str) -> str | None:
     """Port-scan a list of IPs for PaperCut ports. Returns first hit or None."""
