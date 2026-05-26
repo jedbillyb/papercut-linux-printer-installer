@@ -346,8 +346,14 @@ def discover_server() -> str | None:
     gateway = _default_gateway()
     if gateway:
         msg = f"  [2/3] DNS via gateway ({gateway})"
-        print(f"\r{msg} {_SPINNER[0]}", end="", flush=True)
-        ip = _discover_dns(gateway)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_discover_dns, gateway)
+            i = 0
+            while not future.done():
+                print(f"\r{msg} {_SPINNER[i % len(_SPINNER)]}", end="", flush=True)
+                i += 1
+                time.sleep(0.1)
+        ip = future.result()
         print(f"\r{msg}... {'found ' + ip if ip else 'not found'}")
         if ip:
             return ip
