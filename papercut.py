@@ -32,8 +32,10 @@ try:
 except ImportError:
     HAS_ZEROCONF = False
 
-HTTP_PORT  = 9163
-HTTPS_PORT = 9164
+IPP_PORT     = 9163   # IPP — used in CUPS device URIs for print jobs
+IPP_SSL_PORT = 9164   # IPPS — used in CUPS device URIs for print jobs
+API_PORT     = 9191   # PaperCut web / API (HTTP)
+API_SSL_PORT = 9192   # PaperCut web / API (HTTPS)
 
 _DEBUG = False
 
@@ -147,7 +149,7 @@ def _start_mdns() -> tuple[object, list[str]] | tuple[None, None]:
             if not info or not info.addresses:
                 return
             n = name.lower()
-            if (info.port in (HTTP_PORT, HTTPS_PORT)
+            if (info.port in (IPP_PORT, IPP_SSL_PORT)
                     or "papercut" in n or "pc-printer" in n):
                 ip = socket.inet_ntoa(info.addresses[0])
                 if ip not in found:
@@ -176,11 +178,11 @@ def _discover_dns(gateway: str) -> str | None:
             fqdn = f"{hostname}.{domain}"
             ip = _dns_query(gateway, fqdn)
             if ip and ip != gateway:
-                if _port_open(ip, HTTP_PORT) or _port_open(ip, HTTPS_PORT):
+                if _port_open(ip, API_PORT) or _port_open(ip, API_SSL_PORT):
                     return ip
             try:
                 ip = socket.gethostbyname(fqdn)
-                if _port_open(ip, HTTP_PORT) or _port_open(ip, HTTPS_PORT):
+                if _port_open(ip, API_PORT) or _port_open(ip, API_SSL_PORT):
                     return ip
             except Exception:
                 pass
@@ -194,7 +196,7 @@ def _scan_hosts(hosts: list, label: str) -> str | None:
     prefix = f"    scanning {label} ({len(hosts)} hosts)"
 
     def check(ip):
-        for port in (HTTP_PORT, HTTPS_PORT):
+        for port in (API_PORT, API_SSL_PORT):
             if _port_open(ip, port):
                 return ip
         return None
@@ -224,8 +226,8 @@ def _probe_live_24s(prefixes: list[str], label: str) -> list[str]:
 
     def probe(prefix):
         for host in (f"{prefix}.1", f"{prefix}.254"):
-            if (_port_open(host, HTTP_PORT, timeout=0.2)
-                    or _port_open(host, HTTPS_PORT, timeout=0.2)):
+            if (_port_open(host, API_PORT, timeout=0.2)
+                    or _port_open(host, API_SSL_PORT, timeout=0.2)):
                 return prefix
         return None
 
@@ -405,15 +407,16 @@ def _printer_from_match(m: re.Match) -> dict:
     return {
         "name":    raw_name.replace("+", " ").replace("%2b", "+").replace("~2b", "+"),
         "server":  host.split(":")[0],
-        "port":    HTTPS_PORT if scheme == "https" else HTTP_PORT,
+        "port":    IPP_SSL_PORT if scheme == "https" else IPP_PORT,
         "scheme":  scheme,
         "user_id": int(uid),
         "token":   token,
     }
 
 
-def _parse_printer_list(body: any, server: str, port: int,
-                         scheme: str, user_id: int | None) -> list[dict]:
+def _parse_printer_list(body: any, server: str, scheme: str,
+                         user_id: int | None) -> list[dict]:
+    ipp_port = IPP_SSL_PORT if scheme == "https" else IPP_PORT
     printers = []
     items = body if isinstance(body, list) else body.get("printers", [])
     for item in items:
@@ -427,13 +430,13 @@ def _parse_printer_list(body: any, server: str, port: int,
             token = item.get("token") or item.get("userToken") or item.get("authToken", "")
             uid   = int(item.get("userId") or item.get("user_id") or user_id or 0)
             if name and token:
-                printers.append({"name": name, "server": server, "port": port,
+                printers.append({"name": name, "server": server, "port": ipp_port,
                                   "scheme": scheme, "user_id": uid, "token": token})
     return printers
 
 
 def fetch_printers(server: str, username: str, password: str) -> list[dict]:
-    for scheme, port in [("https", HTTPS_PORT), ("http", HTTP_PORT)]:
+    for scheme, port in [("https", API_SSL_PORT), ("http", API_PORT)]:
         base = f"{scheme}://{server}:{port}"
         auth_token, user_info = _auth(base, username, password)
         if user_info is None:
@@ -452,7 +455,7 @@ def fetch_printers(server: str, username: str, password: str) -> list[dict]:
         for path in paths:
             status, body = _get(base + path, auth_token)
             if status == 200 and body:
-                found = _parse_printer_list(body, server, port, scheme, user_id)
+                found = _parse_printer_list(body, server, scheme, user_id)
                 if found:
                     return found
 
