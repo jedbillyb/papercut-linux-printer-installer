@@ -606,6 +606,7 @@ def main() -> None:
         server = input("Server IP or hostname: ").strip()
     if not server:
         print("No server found.")
+        print("See TROUBLESHOOTING.md for help finding your server address.")
         sys.exit(1)
 
     username = input("Username: ").strip()
@@ -616,6 +617,7 @@ def main() -> None:
     if not printers:
         print("failed.")
         print("Could not fetch printers — check credentials and server address.")
+        print("See TROUBLESHOOTING.md for help.")
         sys.exit(1)
     print(f"{len(printers)} printer(s) found\n")
 
