@@ -239,7 +239,7 @@ def _probe_live_24s(prefixes: list[str], label: str) -> list[str]:
 
 
 def _discover_scan(networks: list[ipaddress.IPv4Network]) -> str | None:
-    """Scan local subnets, then /16, then /8 — stopping as soon as found."""
+    """Scan local subnets then the rest of the /16 — stopping as soon as found."""
     my_ip = _get_own_ip()
     gateway = _default_gateway()
 
@@ -277,37 +277,6 @@ def _discover_scan(networks: list[ipaddress.IPv4Network]) -> str | None:
             )
             if result:
                 return result
-
-    # 3. Rest of the /8 — only within RFC 1918 private space
-    # 10.0.0.0/8 is fully private; 172.16-31.x.x and 192.168.x.x are the others.
-    # Never expand into public internet ranges.
-    private_8s = {"10"}
-    private_second = None
-    if first == "172":
-        private_second = range(16, 32)  # 172.16–31
-    elif first == "192" and second == "168":
-        pass  # already covered by /16 expansion above
-
-    if first not in private_8s and private_second is None:
-        return None  # not in a /8-expandable private range
-
-    candidates_8 = [
-        f"{first}.{b}.{c}"
-        for b in (range(256) if first == "10" else private_second)
-        if str(b) != second
-        for c in range(256)
-        if f"{first}.{b}.{c}" not in scanned_prefixes
-    ]
-    if candidates_8:
-        live = _probe_live_24s(candidates_8, f"{first}.0.0.0/8")
-        for prefix in live:
-            result = _scan_hosts(
-                [f"{prefix}.{i}" for i in range(1, 255)], f"{prefix}.0/24"
-            )
-            if result:
-                return result
-        else:
-            print("no candidates")
 
     return None
 
