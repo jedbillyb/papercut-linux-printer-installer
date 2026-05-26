@@ -7,50 +7,43 @@ PaperCut client required - uses Linux's built-in CUPS with standard IPP.
 
 PaperCut exposes each printer as a standard IPP (Internet Printing Protocol)
 endpoint. The URL contains a per-user auth token, so no separate login is
-needed at print time. This tool extracts those URLs from a network capture and
-adds the printers to CUPS using driverless (IPP Everywhere) printing with PDF.
+needed at print time. This tool authenticates with your school credentials to
+fetch those URLs, then adds the printers to CUPS using driverless (IPP Everywhere)
+printing with PDF.
 
 ## Requirements
 
 - Linux with CUPS installed
 - Python 3.8+
-- `tshark` (for `discover.py`)
 - Connected to the same network as the PaperCut server
 
-### Install CUPS and tshark
+### Install CUPS
 
 | Distro | Command |
 |--------|---------|
-| Ubuntu/Debian | `sudo apt install cups wireshark-cli` |
-| Arch | `sudo pacman -S cups wireshark-cli` |
-| Fedora | `sudo dnf install cups wireshark-cli` |
-| Void | `sudo xbps-install cups wireshark` |
+| Ubuntu/Debian | `sudo apt install cups` |
+| Arch | `sudo pacman -S cups` |
+| Fedora | `sudo dnf install cups` |
+| Void | `sudo xbps-install cups` |
 
 ---
 
 ## Workflow
 
-### Step 1 - Capture the printer traffic
-
-You need a network capture that includes the PaperCut discovery traffic.
-The easiest way is from any Windows or Mac machine already set up with PaperCut.
-
-1. Install [Wireshark](https://www.wireshark.org/) on the Windows/Mac machine
-2. Start a capture on the active network interface
-3. Open **Settings → Bluetooth & devices → Printers** (Windows) or  
-   **System Settings → Printers** (Mac) - this triggers the PaperCut client to query the server
-4. Wait a few seconds, then stop the capture
-5. **File → Export as pcapng** and copy the file to your Linux machine
-
-### Step 2 - Extract printer config
+### Step 1 - Discover printers (using your school login)
 
 ```bash
-python3 discover.py --pcap capture.pcapng
+python3 discover.py --server 10.10.5.19 --username yourname
 ```
 
-This creates `printers.json` with the server address, user ID, and per-printer tokens.
+Enter your password when prompted. This saves `printers.json` with all your
+printer URLs and auth tokens.
 
-### Step 3 - Install the printers
+If you don't know the server IP, ask your IT department or check the hostname
+your Windows machine uses for printing (usually something like
+`rpc.pc-printer-discovery.schoolname.local`).
+
+### Step 2 - Install the printers
 
 ```bash
 sudo python3 install.py --config printers.json
@@ -60,21 +53,42 @@ Done. The printers will appear in any application's print dialog.
 
 ---
 
+### Alternative: extract tokens from a network capture
+
+If credential-based discovery doesn't work with your school's setup, you can
+extract tokens from a Wireshark capture instead.
+
+1. Install [Wireshark](https://www.wireshark.org/) on a Windows/Mac machine
+2. Start a capture, open **Settings -> Printers**, wait a few seconds, stop
+3. Save as `.pcapng`, copy to your Linux machine
+4. Run:
+
+```bash
+python3 discover.py --pcap capture.pcapng
+sudo python3 install.py --config printers.json
+```
+
+---
+
 ## Commands
 
 ### discover.py
 
 ```bash
-# Extract from a pcap file (creates printers.json)
+# Discover using school credentials (recommended)
+python3 discover.py --server 10.10.5.19 --username yourname
+python3 discover.py --server 10.10.5.19 --username yourname --password secret
+
+# Extract from a pcap file
 python3 discover.py --pcap capture.pcapng
 
 # Save to a custom filename
-python3 discover.py --pcap capture.pcapng --output myschool.json
+python3 discover.py --server 10.10.5.19 --username yourname --output myschool.json
 
 # Print to stdout instead of saving
-python3 discover.py --pcap capture.pcapng --print
+python3 discover.py --server 10.10.5.19 --username yourname --print
 
-# Live capture (must be on the network, requires root)
+# Live capture (requires root + tshark)
 sudo python3 discover.py --live --interface eth0 --duration 30
 ```
 
@@ -98,9 +112,8 @@ sudo python3 install.py --config printers.json --remove
 
 ## Refreshing tokens
 
-If your tokens expire or you switch user accounts, repeat Steps 1–3 with a
-fresh capture. The new `printers.json` will replace the old one, and
-re-running `install.py` will update the existing CUPS queues.
+If your tokens expire or you switch user accounts, just re-run Step 1 with
+fresh credentials. Re-running `install.py` will update the existing CUPS queues.
 
 ---
 
@@ -123,13 +136,10 @@ username/password is sent at print time.
 
 ## Troubleshooting
 
-**`tshark: command not found`** - install `wireshark-cli` or `wireshark` package.
+**Server unreachable** - make sure you are on the same network (or VPN) as the
+PaperCut server. The server address is stored in `printers.json`.
 
-**No printers found in capture** - make sure the capture includes traffic on
-port 9163. In Wireshark you can verify with the filter `tcp.port == 9163`.
-
-**Server unreachable** - you must be on the same network (or VPN) as the
-PaperCut server. The server hostname is stored in `printers.json`.
+**Credentials not working** - try the pcap method as a fallback (see above).
 
 **`lpadmin: IPP Everywhere` error** - your CUPS version may be too old.
-Update to CUPS 2.2+ or try installing `printer-driver-cups-pdf` as a fallback.
+Update to CUPS 2.2+ or install `printer-driver-cups-pdf` as a fallback.
