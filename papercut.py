@@ -606,7 +606,7 @@ def main() -> None:
         print("See TROUBLESHOOTING.md if you need help finding your server address.")
         server = input("Server IP or hostname: ").strip()
     if not server:
-        print("No server found.")
+        print("No server found. Use --server <ip> to specify it manually, or see TROUBLESHOOTING.md.")
         sys.exit(1)
 
     username = input("Username: ").strip()
