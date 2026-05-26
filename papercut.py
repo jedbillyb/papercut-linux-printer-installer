@@ -448,18 +448,28 @@ def _patch_ppd_pdf(name: str) -> bool:
     which requires pdftopdf (cups-filters) to process. Adding a direct
     application/pdf pass-through lets CUPS send PDF jobs straight to
     Mobility Print without any conversion filter.
+
+    Uses lpadmin -P to install the patched PPD so CUPS loads it
+    immediately without needing a daemon reload.
     """
     ppd_path = f"/etc/cups/ppd/{name}.ppd"
+    tmp_path = f"/tmp/papercut-{name}.ppd"
     try:
         with open(ppd_path) as f:
             content = f.read()
-        if "application/pdf application/pdf" not in content:
-            with open(ppd_path, "a") as f:
-                f.write('\n*cupsFilter2: "application/pdf application/pdf 0 -"\n')
-            return True
+        if "application/pdf application/pdf" in content:
+            return False
+        patched = content + '\n*cupsFilter2: "application/pdf application/pdf 0 -"\n'
+        with open(tmp_path, "w") as f:
+            f.write(patched)
+        ok = _run("lpadmin", "-p", name, "-P", tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        return ok
     except Exception:
-        pass
-    return False
+        return False
 
 
 def _cups_papercut_printers() -> list[str]:
@@ -506,15 +516,6 @@ def install_printers(printers: list[dict]) -> None:
             ok += 1
         else:
             print("FAILED")
-
-    if ppd_patched:
-        # CUPS must reload to pick up PPD changes made directly to the file.
-        # Try each init system in turn; fall back to a direct SIGHUP on cupsd.
-        if not (_run("systemctl", "reload", "cups")
-                or _run("systemctl", "reload", "cupsd")
-                or _run("sv", "reload", "cups")
-                or _run("sv", "reload", "cupsd")):
-            subprocess.run(["pkill", "-HUP", "cupsd"], capture_output=True)
 
     ready = ok + skipped
     print(f"\n{ready}/{len(printers)} printers ready.")
