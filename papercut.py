@@ -325,7 +325,7 @@ def _get_own_ip() -> str | None:
 
 
 def discover_server() -> str | None:
-    header = "Searching for PaperCut server"
+    header = "[1/3] Searching for PaperCut server"
     if HAS_ZEROCONF:
         zc, found = _start_mdns()
         for i in range(40):  # 4 s in 100 ms ticks
