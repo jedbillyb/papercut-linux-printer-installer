@@ -508,8 +508,13 @@ def install_printers(printers: list[dict]) -> None:
             print("FAILED")
 
     if ppd_patched:
-        # CUPS must reload to pick up PPD changes made directly to the file
-        _run("systemctl", "reload", "cups") or _run("systemctl", "reload", "cupsd")
+        # CUPS must reload to pick up PPD changes made directly to the file.
+        # Try each init system in turn; fall back to a direct SIGHUP on cupsd.
+        if not (_run("systemctl", "reload", "cups")
+                or _run("systemctl", "reload", "cupsd")
+                or _run("sv", "reload", "cups")
+                or _run("sv", "reload", "cupsd")):
+            subprocess.run(["pkill", "-HUP", "cupsd"], capture_output=True)
 
     ready = ok + skipped
     print(f"\n{ready}/{len(printers)} printers ready.")
