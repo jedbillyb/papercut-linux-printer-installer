@@ -186,46 +186,96 @@ def _discover_dns(gateway: str) -> str | None:
     return None
 
 
-def _discover_scan(network: ipaddress.IPv4Network) -> str | None:
-    """Scan the local subnet for open PaperCut ports."""
-    hosts = list(network.hosts())
-    total = len(hosts)
+def _scan_hosts(hosts: list, label: str) -> str | None:
+    """Port-scan a list of IPs for PaperCut ports. Returns first hit or None."""
+    print(f"  {label} ({len(hosts)} hosts)", end="", flush=True)
 
-    # Scan /24 first (fast), then rest of subnet if needed
-    my_ip = _get_own_ip()
-    if my_ip:
-        same_24 = [h for h in hosts
-                   if str(h).rsplit(".", 1)[0] == my_ip.rsplit(".", 1)[0]]
-        rest    = [h for h in hosts if h not in same_24]
-        ordered = same_24 + rest
-    else:
-        ordered = hosts
-
-    print(f"  scanning {total} host(s)", end="", flush=True)
-
-    def check(host):
-        ip = str(host)
+    def check(ip):
         for port in (HTTP_PORT, HTTPS_PORT):
             if _port_open(ip, port):
                 return ip
         return None
 
-    with ThreadPoolExecutor(max_workers=150) as pool:
-        futures = {pool.submit(check, h): h for h in ordered}
+    with ThreadPoolExecutor(max_workers=200) as pool:
+        futures = {pool.submit(check, str(h)): h for h in hosts}
         done = 0
         for future in as_completed(futures):
             done += 1
-            if done % 50 == 0:
+            if done % 100 == 0:
                 print(".", end="", flush=True)
             result = future.result()
             if result:
-                # Cancel remaining
                 for f in futures:
                     f.cancel()
                 print(f" found {result}")
                 return result
 
     print(" not found")
+    return None
+
+
+def _discover_scan(network: ipaddress.IPv4Network) -> str | None:
+    """Scan the local subnet, then all other /24 blocks in the same /8."""
+    my_ip = _get_own_ip()
+
+    # Local subnet first
+    local_hosts = list(network.hosts())
+    # Sort so same /24 as our IP goes first
+    if my_ip:
+        my_24 = my_ip.rsplit(".", 1)[0]
+        local_hosts.sort(key=lambda h: (str(h).rsplit(".", 1)[0] != my_24))
+    result = _scan_hosts(local_hosts, f"local subnet {network}")
+    if result:
+        return result
+
+    # Expand: scan all other /24 blocks in the same /8
+    gateway = _default_gateway()
+    if not gateway:
+        return None
+
+    first_octet = gateway.split(".")[0]
+    # Build candidate /24 subnets in the same /8, excluding the local /16
+    local_second = network.network_address.packed[1]
+    candidates: list[str] = []
+    for b in range(0, 256):
+        if b == local_second:
+            continue  # skip the /16 we already scanned
+        for c in range(0, 256):
+            candidates.append(f"{first_octet}.{b}.{c}")
+
+    # Quick pre-check: ping .1 of each /24 to find live networks
+    print(f"  probing {first_octet}.0.0/8 for live networks...", end=" ", flush=True)
+
+    live_24s: list[str] = []
+
+    def probe_24(prefix):
+        if _port_open(f"{prefix}.1", HTTP_PORT, timeout=0.2) or \
+           _port_open(f"{prefix}.1", HTTPS_PORT, timeout=0.2):
+            return prefix
+        # Also try .254 in case .1 isn't the server
+        if _port_open(f"{prefix}.254", HTTP_PORT, timeout=0.2) or \
+           _port_open(f"{prefix}.254", HTTPS_PORT, timeout=0.2):
+            return prefix
+        return None
+
+    with ThreadPoolExecutor(max_workers=300) as pool:
+        for hit in pool.map(probe_24, candidates):
+            if hit:
+                live_24s.append(hit)
+
+    if not live_24s:
+        print("none found")
+        return None
+
+    print(f"{len(live_24s)} live network(s) found")
+
+    # Full scan of each live /24
+    for prefix in live_24s:
+        hosts = [f"{prefix}.{i}" for i in range(1, 255)]
+        result = _scan_hosts(hosts, f"{prefix}.0/24")
+        if result:
+            return result
+
     return None
 
 
