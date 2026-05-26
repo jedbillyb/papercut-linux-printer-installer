@@ -91,6 +91,18 @@ CUPS may not be installed or running:
 sudo systemctl enable --now cups
 ```
 
+## "Could not fetch printers" after finding the server
+
+If discovery succeeds but the script fails to fetch printers, run with `--debug` to see exactly what URLs are being tried and what the server is returning:
+
+```bash
+sudo python3 papercut.py --server 10.10.5.19 --debug
+```
+
+This prints every HTTP request, its status code, and the response body. Share this output when asking for help.
+
+---
+
 ## Printers show as unavailable after install
 
 Run:

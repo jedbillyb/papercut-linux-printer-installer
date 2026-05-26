@@ -35,6 +35,13 @@ except ImportError:
 HTTP_PORT  = 9163
 HTTPS_PORT = 9164
 
+_DEBUG = False
+
+
+def _dbg(*args) -> None:
+    if _DEBUG:
+        print("[debug]", *args)
+
 MDNS_TYPES = [
     "_pc-printer-discovery._tcp.local.",
     "_ipp._tcp.local.",
@@ -346,27 +353,37 @@ def _ssl_ctx() -> ssl.SSLContext:
 
 
 def _post(url: str, data: dict) -> tuple[int, dict | None]:
+    _dbg(f"POST {url}")
     body = json.dumps(data).encode()
     req  = urllib.request.Request(url, data=body,
                                    headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, context=_ssl_ctx(), timeout=5) as r:
-            return r.status, json.loads(r.read())
+            result = json.loads(r.read())
+            _dbg(f"  → {r.status} {json.dumps(result)[:300]}")
+            return r.status, result
     except urllib.error.HTTPError as e:
+        _dbg(f"  → {e.code} (HTTP error)")
         return e.code, None
-    except Exception:
+    except Exception as e:
+        _dbg(f"  → 0 ({e})")
         return 0, None
 
 
 def _get(url: str, token: str | None = None) -> tuple[int, any]:
+    _dbg(f"GET {url}")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, context=_ssl_ctx(), timeout=5) as r:
-            return r.status, json.loads(r.read())
+            result = json.loads(r.read())
+            _dbg(f"  → {r.status} {json.dumps(result)[:300]}")
+            return r.status, result
     except urllib.error.HTTPError as e:
+        _dbg(f"  → {e.code} (HTTP error)")
         return e.code, None
-    except Exception:
+    except Exception as e:
+        _dbg(f"  → 0 ({e})")
         return 0, None
 
 
@@ -548,7 +565,11 @@ def main() -> None:
     parser.add_argument("--remove", action="store_true",
                         help="remove PaperCut printers previously installed by this tool")
     parser.add_argument("--pcap", metavar="FILE", help=argparse.SUPPRESS)
+    parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    global _DEBUG
+    _DEBUG = args.debug
 
     if args.pcap:
         printers = fetch_from_pcap(args.pcap)
