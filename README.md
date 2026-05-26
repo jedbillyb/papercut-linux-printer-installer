@@ -32,7 +32,7 @@ Automatically discovers your PaperCut Mobility Print server and installs all ava
 | Ubuntu / Debian | `sudo apt install cups python3-zeroconf` |
 | Arch | `sudo pacman -S cups python-zeroconf` |
 | Fedora | `sudo dnf install cups python3-zeroconf` |
-| Void | `sudo xbps-install cups python3-zeroconf` |
+| Void | `sudo xbps-install cups cups-filters python3-zeroconf` |
 
 Or via pip (in a venv or with `--break-system-packages`):
 
@@ -134,6 +134,13 @@ sudo python3 papercut.py --server <ip-or-hostname>
 
 **"CUPS not found"**
 Install CUPS using the command for your distro in the table above.
+
+**Printers install but jobs fail with "document format not supported"**
+Re-run the script — it will patch the printer PPDs automatically:
+```bash
+sudo python3 papercut.py --server 10.1.1.12
+```
+If the problem persists, install `cups-filters` for your distro (adds PDF conversion support).
 
 **Printers install but jobs don't print**
 Make sure your account has print credit/quota remaining in PaperCut.

@@ -441,6 +441,27 @@ def _cups_ok() -> bool:
     return _run("which", "lpadmin")
 
 
+def _patch_ppd_pdf(name: str) -> bool:
+    """Add a direct PDF pass-through to the printer's PPD if missing.
+
+    The 'everywhere' PPD only declares application/vnd.cups-pdf as input,
+    which requires pdftopdf (cups-filters) to process. Adding a direct
+    application/pdf pass-through lets CUPS send PDF jobs straight to
+    Mobility Print without any conversion filter.
+    """
+    ppd_path = f"/etc/cups/ppd/{name}.ppd"
+    try:
+        with open(ppd_path) as f:
+            content = f.read()
+        if "application/pdf application/pdf" not in content:
+            with open(ppd_path, "a") as f:
+                f.write('\n*cupsFilter2: "application/pdf application/pdf 0 -"\n')
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _cups_papercut_printers() -> list[str]:
     """Return names of CUPS printers whose device URI is a PaperCut IPP endpoint."""
     result = subprocess.run(["lpstat", "-v"], capture_output=True, text=True)
@@ -467,7 +488,9 @@ def install_printers(printers: list[dict]) -> None:
     for p in printers:
         name = _cups_name(p)
         if _run("lpstat", "-p", name):
-            print(f"  (skip)   {name}... already installed")
+            patched = _patch_ppd_pdf(name)
+            suffix = " (PPD patched)" if patched else ""
+            print(f"  (skip)   {name}... already installed{suffix}")
             skipped += 1
             continue
         print(f"  (new)    {name}...", end=" ", flush=True)
@@ -475,6 +498,7 @@ def install_printers(printers: list[dict]) -> None:
                 "-m", "everywhere", "-E", "-D", p["name"]):
             _run("cupsenable", name)
             _run("cupsaccept", name)
+            _patch_ppd_pdf(name)
             print("done")
             ok += 1
         else:
