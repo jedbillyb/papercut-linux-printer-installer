@@ -181,9 +181,11 @@ def _discover_dns(gateway: str) -> str | None:
     return None
 
 
+_SPINNER = ["|", "/", "-", "\\"]
+
 def _scan_hosts(hosts: list, label: str) -> str | None:
     """Port-scan a list of IPs for PaperCut ports. Returns first hit or None."""
-    print(f"    scanning {label} ({len(hosts)} hosts)...", end="", flush=True)
+    prefix = f"    scanning {label} ({len(hosts)} hosts)"
 
     def check(ip):
         for port in (HTTP_PORT, HTTPS_PORT):
@@ -195,17 +197,17 @@ def _scan_hosts(hosts: list, label: str) -> str | None:
         futures = {pool.submit(check, str(h)): h for h in hosts}
         done = 0
         for future in as_completed(futures):
+            spin = _SPINNER[done % len(_SPINNER)]
+            print(f"\r{prefix} {spin}", end="", flush=True)
             done += 1
-            if done % 100 == 0:
-                print(".", end="", flush=True)
             result = future.result()
             if result:
                 for f in futures:
                     f.cancel()
-                print(f" found {result}")
+                print(f"\r{prefix} found {result}")
                 return result
 
-    print(" not found")
+    print(f"\r{prefix} not found")
     return None
 
 
@@ -259,7 +261,7 @@ def _discover_scan(networks: list[ipaddress.IPv4Network]) -> str | None:
         if f"{first}.{second}.{c}" not in scanned_prefixes
     ]
     if candidates_16:
-        print(f"    probing {first}.{second}.0/16...", end=" ", flush=True)
+        print(f"    probing {first}.{second}.0.0/16...", end=" ", flush=True)
         live = _probe_live_24s(candidates_16)
         if live:
             print(f"{len(live)} candidate(s)")
@@ -593,6 +595,7 @@ def main() -> None:
     if not server:
         server = discover_server()
     if not server:
+        print()
         server = input("Server IP or hostname: ").strip()
     if not server:
         print("No server found.")
