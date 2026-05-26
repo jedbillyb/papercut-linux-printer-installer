@@ -1,6 +1,6 @@
 # PaperCut Linux Printer Installer
 
-> Add your school's PaperCut printers to Linux in one command — no proprietary client needed.
+> Add your school's PaperCut printers to Linux in one command - no proprietary client needed.
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)](https://kernel.org/)
@@ -12,10 +12,10 @@ Automatically discovers your PaperCut print server, authenticates with your scho
 
 ## Features
 
-- **Zero config** — finds the server via mDNS, DNS lookup, or subnet scan automatically
-- **Driverless** — uses IPP Everywhere; no manufacturer drivers required
-- **Full quality** — documents sent as PDF, no rasterisation or colour loss
-- **Safe removal** — `--remove` only touches printers this tool installed, nothing else
+- **Zero config** - finds the server via mDNS, DNS lookup, or subnet scan automatically
+- **Driverless** - uses IPP Everywhere; no manufacturer drivers required
+- **Full quality** - documents sent as PDF, no rasterisation or colour loss
+- **Safe removal** - `--remove` only touches printers this tool installed, nothing else
 
 ---
 
@@ -23,7 +23,7 @@ Automatically discovers your PaperCut print server, authenticates with your scho
 
 - Linux with CUPS installed
 - Python 3.8+
-- [`zeroconf`](https://pypi.org/project/zeroconf/) *(optional — enables mDNS discovery; falls back to DNS/scan without it)*
+- [`zeroconf`](https://pypi.org/project/zeroconf/) *(optional - enables mDNS discovery; falls back to DNS/scan without it)*
 
 ### Install dependencies
 
@@ -49,7 +49,7 @@ git clone https://github.com/jedbillyb/papercut-linux-printer-installer
 cd papercut-linux-printer-installer
 ```
 
-No build step required — `papercut.py` is a single self-contained script.
+No build step required - `papercut.py` is a single self-contained script.
 
 ---
 
@@ -103,7 +103,7 @@ PaperCut exposes each printer as a standard IPP endpoint with a per-user auth to
 1. **Discovers** the server using three methods in order:
    - mDNS broadcast (`_pc-printer-discovery._tcp`, `_ipp._tcp`, `_ipps._tcp`)
    - DNS lookup of common PaperCut hostnames via your default gateway
-   - Port scan — local subnet first, then the /16, then the full /8 if needed
+   - Port scan - local subnet first, then the /16, then the full /8 if needed
 2. **Authenticates** against the PaperCut REST API with your credentials
 3. **Installs** each printer into CUPS via `lpadmin` using the `everywhere` (driverless) driver
 
@@ -129,13 +129,13 @@ Your CUPS service may not be running. Start it with:
 sudo systemctl start cups
 ```
 
-For more detail — including how to find your server address and notes on VLAN-segmented school networks — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+For more detail - including how to find your server address and notes on VLAN-segmented school networks - see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ---
 
 ## Contributing
 
-Pull requests are welcome. Please keep changes focused — one fix or feature per PR. If you're adding support for a new PaperCut API path or discovery method, include a brief description of where you found the endpoint.
+Pull requests are welcome. Please keep changes focused - one fix or feature per PR. If you're adding support for a new PaperCut API path or discovery method, include a brief description of where you found the endpoint.
 
 ---
 
