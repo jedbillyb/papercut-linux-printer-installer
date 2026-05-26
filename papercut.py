@@ -361,15 +361,51 @@ def _make_opener(jar: http.cookiejar.CookieJar) -> urllib.request.OpenerDirector
 
 def _form_login(opener: urllib.request.OpenerDirector,
                 base: str, username: str, password: str) -> str:
-    """POST form credentials to /user. Returns response HTML."""
-    url = f"{base}/user"
-    body = urllib.parse.urlencode({
-        "inputUsername": username,
-        "inputPassword": password,
-    }).encode()
-    _dbg(f"POST {url}")
-    req = urllib.request.Request(url, data=body,
-                                  headers={"Content-Type": "application/x-www-form-urlencoded"})
+    """GET /user to scrape the login form, then POST to its action URL. Returns response HTML."""
+    # Step 1: fetch the login page to get the real form action and hidden fields
+    _dbg(f"GET {base}/user")
+    try:
+        with opener.open(f"{base}/user", timeout=10) as r:
+            login_html = r.read().decode("utf-8", errors="replace")
+            _dbg(f"  → {r.status} ({len(login_html)} bytes)")
+    except Exception as e:
+        _dbg(f"  → 0 ({e})")
+        return ""
+
+    # Parse form action (may be relative like /app;jsessionid=...)
+    action_m = re.search(r'<form[^>]+action=["\']([^"\']+)["\']', login_html, re.IGNORECASE)
+    if action_m:
+        action = action_m.group(1)
+        # Resolve relative action against base
+        if action.startswith("/"):
+            post_url = f"{base}{action}"
+        elif action.startswith("http"):
+            post_url = action
+        else:
+            post_url = f"{base}/{action}"
+    else:
+        post_url = f"{base}/user"
+    _dbg(f"  form action → {post_url}")
+
+    # Collect all hidden input fields
+    fields: dict[str, str] = {}
+    for m in re.finditer(
+        r'<input[^>]+type=["\']hidden["\'][^>]*>', login_html, re.IGNORECASE
+    ):
+        tag = m.group(0)
+        name_m  = re.search(r'\bname=["\']([^"\']+)["\']',  tag, re.IGNORECASE)
+        value_m = re.search(r'\bvalue=["\']([^"\']*)["\']', tag, re.IGNORECASE)
+        if name_m:
+            fields[name_m.group(1)] = value_m.group(1) if value_m else ""
+
+    fields["inputUsername"] = username
+    fields["inputPassword"] = password
+    fields["$Submit$0"]     = "Log in"
+
+    _dbg(f"POST {post_url} (fields: {list(fields.keys())})")
+    body = urllib.parse.urlencode(fields).encode()
+    req  = urllib.request.Request(post_url, data=body,
+                                   headers={"Content-Type": "application/x-www-form-urlencoded"})
     try:
         with opener.open(req, timeout=10) as r:
             html = r.read().decode("utf-8", errors="replace")
