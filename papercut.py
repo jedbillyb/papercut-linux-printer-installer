@@ -484,7 +484,7 @@ def install_printers(printers: list[dict]) -> None:
         print("  Void          : sudo xbps-install cups")
         sys.exit(1)
 
-    ok = skipped = 0
+    ok = skipped = ppd_patched = 0
     for p in printers:
         name = _cups_name(p)
         if _run("lpstat", "-p", name):
@@ -492,17 +492,24 @@ def install_printers(printers: list[dict]) -> None:
             suffix = " (PPD patched)" if patched else ""
             print(f"  (skip)   {name}... already installed{suffix}")
             skipped += 1
+            if patched:
+                ppd_patched += 1
             continue
         print(f"  (new)    {name}...", end=" ", flush=True)
         if _run("lpadmin", "-p", name, "-v", _ipp_url(p),
                 "-m", "everywhere", "-E", "-D", p["name"]):
             _run("cupsenable", name)
             _run("cupsaccept", name)
-            _patch_ppd_pdf(name)
+            if _patch_ppd_pdf(name):
+                ppd_patched += 1
             print("done")
             ok += 1
         else:
             print("FAILED")
+
+    if ppd_patched:
+        # CUPS must reload to pick up PPD changes made directly to the file
+        _run("systemctl", "reload", "cups") or _run("systemctl", "reload", "cupsd")
 
     ready = ok + skipped
     print(f"\n{ready}/{len(printers)} printers ready.")
