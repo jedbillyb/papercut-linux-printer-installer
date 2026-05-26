@@ -325,21 +325,22 @@ def _get_own_ip() -> str | None:
 
 
 def discover_server() -> str | None:
-    mdns_msg = "  [1/3] mDNS broadcast"
+    header = "Searching for PaperCut server"
     if HAS_ZEROCONF:
         zc, found = _start_mdns()
         for i in range(40):  # 4 s in 100 ms ticks
-            print(f"\r{mdns_msg} {_SPINNER[i % len(_SPINNER)]}", end="", flush=True)
+            print(f"\r{header} {_SPINNER[i % len(_SPINNER)]}", end="", flush=True)
             time.sleep(0.1)
             if found:
                 break
         zc.close()
         ip = found[0] if found else None
-        print(f"\r{mdns_msg} {'found ' + ip if ip else 'not found'}")
+        print(f"\r{header} {'found ' + ip if ip else 'not found (mDNS)'}")
         if ip:
             return ip
     else:
-        print(f"{mdns_msg} skipped — install python3-zeroconf for faster discovery")
+        print(f"{header}...")
+        print("  mDNS skipped — install python3-zeroconf for faster discovery")
 
     gateway = _default_gateway()
     if gateway:
