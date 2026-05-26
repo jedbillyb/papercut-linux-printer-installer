@@ -420,6 +420,9 @@ def _form_login(opener: urllib.request.OpenerDirector,
             html = r.read().decode("utf-8", errors="replace")
             _dbg(f"  → {r.status} ({len(html)} bytes)")
             _dbg(f"  login page preview: {html[:500]}")
+            with open("/tmp/pc_login.html", "w", errors="replace") as fh:
+                fh.write(html)
+            _dbg("  full response written to /tmp/pc_login.html")
             return html, url_jsid
     except urllib.error.HTTPError as e:
         _dbg(f"  → {e.code}")
@@ -503,13 +506,12 @@ def fetch_printers(server: str, username: str, password: str) -> list[dict]:
         # Step 1: form POST login — follows the redirect and lands on the user page
         login_html, url_jsid = _form_login(opener, base, username, password)
         cookie_jsid = next((c.value for c in jar if c.name == "JSESSIONID"), None)
-        jsid = url_jsid or cookie_jsid
         _dbg(f"  jsessionid (url={url_jsid}, cookie={cookie_jsid})")
 
         # Step 2: collect HTML from the login response + additional authenticated pages
-        jsid_suffix = f";jsessionid={jsid}" if jsid else ""
+        jsid_suffix = f";jsessionid={cookie_jsid}" if cookie_jsid else ""
         all_html = login_html
-        for path in ("/user", "/user/printers"):
+        for path in ("/app", "/app/printers"):
             _, html = _session_get(opener, base + path + jsid_suffix)
             all_html += html
 
