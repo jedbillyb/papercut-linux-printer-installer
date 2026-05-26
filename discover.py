@@ -163,7 +163,7 @@ def discover_via_credentials(server: str, username: str, password: str) -> list[
             continue
 
         if user_info is None:
-            print("Authentication failed — check username/password.")
+            print("Authentication failed - check username/password.")
             sys.exit(1)
 
         user_id = (user_info.get("userId") or user_info.get("id") or
@@ -227,7 +227,7 @@ def parse_pcap_output(output: str) -> list[dict]:
 
 
 def live_capture(interface: str, duration: int) -> list[dict]:
-    print(f"Capturing on {interface} for {duration}s — "
+    print(f"Capturing on {interface} for {duration}s - "
           "open the printer list on your Windows/Mac machine now...")
     with tempfile.NamedTemporaryFile(suffix=".pcapng", delete=False) as f:
         tmp = f.name
