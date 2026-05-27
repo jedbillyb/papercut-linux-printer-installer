@@ -22,7 +22,17 @@ If your school uses strict VLAN segmentation (common in universities and larger 
 
 The simplest option. Ask your school's IT helpdesk for the PaperCut server IP address or hostname. They may know it as the "print server address."
 
-### Option 2 - Find it on a Windows machine that already has PaperCut installed
+### **Option 2 - Try the common PaperCut DNS hostname**
+
+Many schools configure a DNS entry specifically for PaperCut discovery. Try:
+
+```
+nslookup pc-printer-discovery
+```
+
+If this returns an IP, use that as your server address.
+
+### Option 3 - Find it on a Windows machine that already has PaperCut installed
 
 On a Windows PC that can already print via PaperCut, open a Command Prompt and run:
 
@@ -44,7 +54,7 @@ Look for a DNS suffix (e.g. `school.internal`) and try:
 nslookup papercut.school.internal
 ```
 
-### Option 3 - Check the PaperCut client config on Windows
+### Option 4 - Check the PaperCut client config on Windows
 
 If the PaperCut client is installed on a Windows machine, the server address is often stored in:
 
