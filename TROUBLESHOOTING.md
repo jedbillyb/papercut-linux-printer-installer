@@ -82,6 +82,20 @@ This bypasses all discovery and goes straight to fetching the printer list.
 - Check that the CUPS service is running: `sudo systemctl start cups`
 - Try printing a test page from CUPS: open `http://localhost:631` in a browser
 
+## Jobs send but nothing prints / no credential popup appeared
+
+PaperCut Mobility Print always requires user authentication to track quota — if CUPS doesn't know to ask for credentials, the job is sent without them and silently rejected by the server.
+
+This happens when `auth-info-required` was not set on the printer, which can occur if the printer was installed by an older version of this script.
+
+Re-running the installer fixes all installed printers automatically:
+
+```bash
+sudo python3 papercut.py --server <ip>
+```
+
+On the next print attempt, CUPS will show an authentication popup — enter your normal school/work username and password. Most applications remember this for future jobs.
+
 ## `lpadmin` fails during install
 
 CUPS may not be installed or running:

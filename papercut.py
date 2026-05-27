@@ -527,6 +527,7 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
             continue
 
         if already:
+            _run("lpadmin", "-p", name, "-o", "auth-info-required=username,password")
             patched = _patch_ppd_pdf(name)
             suffix = " (PPD patched)" if patched else ""
             print(f"  (skip)   {name}... already installed{suffix}")
@@ -537,7 +538,8 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
             continue
         print(f"  (new)    {name}...", end=" ", flush=True)
         if _run("lpadmin", "-p", name, "-v", _ipp_url(p),
-                "-m", "everywhere", "-E", "-D", p["name"]):
+                "-m", "everywhere", "-E", "-D", p["name"],
+                "-o", "auth-info-required=username,password"):
             _run("cupsenable", name)
             _run("cupsaccept", name)
             if _patch_ppd_pdf(name):

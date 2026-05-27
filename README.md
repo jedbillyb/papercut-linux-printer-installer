@@ -6,7 +6,7 @@
 [![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)](https://kernel.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Automatically discovers your PaperCut Mobility Print server and installs all available printers into CUPS as standard IPP Everywhere queues. Works on any distro that runs CUPS. Your credentials are entered once by your print application the first time you print.
+Automatically discovers your PaperCut Mobility Print server and installs all available printers into CUPS as standard IPP Everywhere queues. Works on any distro that runs CUPS. On Linux, CUPS will show an authentication popup the first time you send a job — enter your normal school/work login credentials there.
 
 ---
 
