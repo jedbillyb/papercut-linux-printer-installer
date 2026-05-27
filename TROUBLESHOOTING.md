@@ -8,9 +8,9 @@ Auto-discovery works by scanning your local network for a PaperCut server. It ca
 
 Discovery requires your machine to be on the **same network segment** as the print server. This means:
 
-- **On campus Wi-Fi or a wired connection** — discovery should work
-- **At home / off-campus** — discovery will not work; you need to specify the server address manually (see below)
-- **On a guest or BYOD Wi-Fi network** — many schools isolate these networks from internal infrastructure using VLANs, which will block discovery even if you're physically on campus
+- **On campus Wi-Fi or a wired connection** - discovery should work
+- **At home / off-campus** - discovery will not work; you need to specify the server address manually (see below)
+- **On a guest or BYOD Wi-Fi network** - many schools isolate these networks from internal infrastructure using VLANs, which will block discovery even if you're physically on campus
 
 If your school uses strict VLAN segmentation (common in universities and larger secondary schools), the print server may simply be unreachable from the student network. In that case, ask IT whether student devices are permitted to print directly via IPP.
 
@@ -18,11 +18,11 @@ If your school uses strict VLAN segmentation (common in universities and larger 
 
 ## Finding your PaperCut server address
 
-### Option 1 — Ask IT
+### Option 1 - Ask IT
 
 The simplest option. Ask your school's IT helpdesk for the PaperCut server IP address or hostname. They may know it as the "print server address."
 
-### Option 2 — Find it on a Windows machine that already has PaperCut installed
+### Option 2 - Find it on a Windows machine that already has PaperCut installed
 
 On a Windows PC that can already print via PaperCut, open a Command Prompt and run:
 
@@ -44,7 +44,7 @@ Look for a DNS suffix (e.g. `school.internal`) and try:
 nslookup papercut.school.internal
 ```
 
-### Option 3 — Check the PaperCut client config on Windows
+### Option 3 - Check the PaperCut client config on Windows
 
 If the PaperCut client is installed on a Windows machine, the server address is often stored in:
 
@@ -116,7 +116,7 @@ sudo cupsaccept <printer-name>
 
 ## Jobs fail with "document format not supported"
 
-CUPS parses PPDs into an in-memory MIME database at startup and validates incoming jobs against that cache — not against the PPD file on disk. Re-running the script patches the PPD files and sends SIGHUP to cupsd to force a re-parse, so the fix takes effect immediately without a full restart:
+CUPS parses PPDs into an in-memory MIME database at startup and validates incoming jobs against that cache - not against the PPD file on disk. Re-running the script patches the PPD files and sends SIGHUP to cupsd to force a re-parse, so the fix takes effect immediately without a full restart:
 
 ```bash
 sudo python3 papercut.py --server <ip>
