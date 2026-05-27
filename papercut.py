@@ -168,7 +168,8 @@ def _start_mdns() -> tuple[object, list[str]] | tuple[None, None]:
         def update_service(self, *_): pass
 
     zc = Zeroconf()
-    [ServiceBrowser(zc, t, Listener()) for t in MDNS_TYPES]
+    for t in MDNS_TYPES:
+        ServiceBrowser(zc, t, Listener())
     return zc, found
 
 
@@ -482,23 +483,48 @@ def _cups_papercut_printers() -> list[str]:
     ]
 
 
-def install_printers(printers: list[dict]) -> None:
-    if os.geteuid() != 0:
-        print("Run with sudo to install printers.")
-        sys.exit(1)
-    if not _cups_ok():
-        print("CUPS not found — install it first:")
-        print("  Ubuntu/Debian : sudo apt install cups")
-        print("  Arch          : sudo pacman -S cups")
-        print("  Fedora        : sudo dnf install cups")
-        print("  Void          : sudo xbps-install cups")
-        sys.exit(1)
+def install_printers(printers: list[dict], dry_run: bool = False) -> None:
+    if not dry_run:
+        if os.geteuid() != 0:
+            print("Run with sudo to install printers.")
+            sys.exit(1)
+        if not _cups_ok():
+            print("CUPS not found — install it first:")
+            print("  Ubuntu/Debian : sudo apt install cups cups-ipp-utils")
+            print("  Arch          : sudo pacman -S cups")
+            print("  Fedora        : sudo dnf install cups cups-ipptool")
+            print("  Void          : sudo xbps-install cups")
+            sys.exit(1)
 
     ok = skipped = ppd_patched = 0
     patched_names: list[str] = []
+    seen_names: dict[str, str] = {}  # cups name → original printer name
     for p in printers:
         name = _cups_name(p)
-        if _run("lpstat", "-p", name):
+        if name in seen_names:
+            print(f"  (warn)   {p['name']!r} and {seen_names[name]!r} both normalize to"
+                  f" {name!r} — skipping {p['name']!r}")
+            continue
+        seen_names[name] = p["name"]
+
+        already = _run("lpstat", "-p", name)
+
+        if dry_run:
+            if already:
+                ppd_path = f"/etc/cups/ppd/{name}.ppd"
+                ppd_needed = False
+                try:
+                    with open(ppd_path) as f:
+                        ppd_needed = "application/pdf application/pdf" not in f.read()
+                except (FileNotFoundError, PermissionError):
+                    pass
+                suffix = " (would patch PPD)" if ppd_needed else ""
+                print(f"  (would skip)    {name} — already installed{suffix}")
+            else:
+                print(f"  (would install) {name}")
+            continue
+
+        if already:
             patched = _patch_ppd_pdf(name)
             suffix = " (PPD patched)" if patched else ""
             print(f"  (skip)   {name}... already installed{suffix}")
@@ -520,6 +546,9 @@ def install_printers(printers: list[dict]) -> None:
         else:
             print("FAILED")
 
+    if dry_run:
+        return
+
     if patched_names:
         # cupsd parses PPDs into an in-memory MIME database on startup; lpadmin -P
         # updates the file but the running daemon keeps the stale parse until SIGHUP.
@@ -527,15 +556,24 @@ def install_printers(printers: list[dict]) -> None:
         subprocess.run(["pkill", "-HUP", "cupsd"], check=False)
         time.sleep(0.5)
         failed_verify = []
+        verification_skipped = False
         for name in patched_names:
-            result = subprocess.run(
-                ["ipptool", "-tv", f"ipp://localhost:631/printers/{name}",
-                 "/usr/share/cups/ipptool/get-printer-attributes.test"],
-                capture_output=True, text=True,
-            )
-            if "application/pdf" not in result.stdout:
-                failed_verify.append(name)
-        if not failed_verify:
+            try:
+                result = subprocess.run(
+                    ["ipptool", "-tv", f"ipp://localhost:631/printers/{name}",
+                     "/usr/share/cups/ipptool/get-printer-attributes.test"],
+                    capture_output=True, text=True,
+                )
+                if "application/pdf" not in result.stdout:
+                    failed_verify.append(name)
+            except FileNotFoundError:
+                print("\nWarning: ipptool not found — skipping PPD verification.")
+                print("If jobs fail with 'document format not supported', restart CUPS manually:")
+                print("  sudo systemctl restart cups   # systemd")
+                print("  sudo sv restart cupsd         # runit/Void")
+                verification_skipped = True
+                break
+        if not failed_verify and not verification_skipped:
             print("done")
         if failed_verify:
             print(f"\nError: PPD patch did not take effect for: {', '.join(failed_verify)}")
@@ -576,6 +614,10 @@ def main() -> None:
                         help="PaperCut server address (skip auto-discovery)")
     parser.add_argument("--remove", action="store_true",
                         help="remove PaperCut printers previously installed by this tool")
+    parser.add_argument("--list", action="store_true",
+                        help="list PaperCut printers currently installed by this tool and exit")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="show what would be installed/skipped without modifying CUPS")
     parser.add_argument("--pcap", metavar="FILE", help=argparse.SUPPRESS)
     parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -591,8 +633,14 @@ def main() -> None:
         for p in printers:
             print(f"  {p['name']}")
         print()
-        install_printers(printers)
+        install_printers(printers, dry_run=args.dry_run)
         return
+
+    if args.list:
+        names = _cups_papercut_printers()
+        for n in names:
+            print(n)
+        sys.exit(0)
 
     if args.remove:
         names = _cups_papercut_printers()
@@ -628,7 +676,7 @@ def main() -> None:
     for p in printers:
         print(f"  {p['name']}")
     print()
-    install_printers(printers)
+    install_printers(printers, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

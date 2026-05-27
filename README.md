@@ -29,9 +29,9 @@ Automatically discovers your PaperCut Mobility Print server and installs all ava
 
 | Distro | Command |
 |--------|---------|
-| Ubuntu / Debian | `sudo apt install cups python3-zeroconf` |
+| Ubuntu / Debian | `sudo apt install cups cups-ipp-utils python3-zeroconf` |
 | Arch | `sudo pacman -S cups python-zeroconf` |
-| Fedora | `sudo dnf install cups python3-zeroconf` |
+| Fedora | `sudo dnf install cups cups-ipptool python3-zeroconf` |
 | Void | `sudo xbps-install cups cups-filters python3-zeroconf` |
 
 Or via pip (in a venv or with `--break-system-packages`):
@@ -64,6 +64,12 @@ sudo python3 papercut.py --server 10.10.5.19
 
 # Remove all PaperCut printers previously installed by this tool
 sudo python3 papercut.py --remove
+
+# List installed PaperCut printers (no sudo needed)
+python3 papercut.py --list
+
+# Preview what would be installed without touching CUPS
+python3 papercut.py --dry-run
 ```
 
 ### Example output
