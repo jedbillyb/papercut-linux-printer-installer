@@ -450,8 +450,10 @@ def _patch_ppd_pdf(name: str) -> bool:
     application/pdf pass-through lets CUPS send PDF jobs straight to
     Mobility Print without any conversion filter.
 
-    Uses lpadmin -P to install the patched PPD so CUPS loads it
-    immediately without needing a daemon reload.
+    Writes the patched PPD via lpadmin -P. The caller is responsible
+    for sending SIGHUP to cupsd afterwards to force a re-parse, since
+    cupsd caches the parsed PPD in memory and lpadmin -P alone does
+    not reliably trigger a reload.
     """
     ppd_path = f"/etc/cups/ppd/{name}.ppd"
     tmp_path = f"/tmp/papercut-{name}.ppd"
@@ -519,9 +521,9 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
                 except (FileNotFoundError, PermissionError):
                     pass
                 suffix = " (would patch PPD)" if ppd_needed else ""
-                print(f"  (would skip)    {name} — already installed{suffix}")
+                print(f"  (would skip)    {name}... already installed{suffix}")
             else:
-                print(f"  (would install) {name}")
+                print(f"  (would install) {name}...")
             continue
 
         if already:
