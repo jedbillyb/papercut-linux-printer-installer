@@ -94,7 +94,7 @@ This bypasses all discovery and goes straight to fetching the printer list.
 
 ## Jobs send but nothing prints / no credential popup appeared
 
-PaperCut Mobility Print always requires user authentication to track quota — if CUPS doesn't know to ask for credentials, the job is sent without them and silently rejected by the server.
+PaperCut Mobility Print always requires user authentication to track quota - if CUPS doesn't know to ask for credentials, the job is sent without them and silently rejected by the server.
 
 This happens when `auth-info-required` was not set on the printer, which can occur if the printer was installed by an older version of this script.
 
@@ -104,7 +104,7 @@ Re-running the installer fixes all installed printers automatically:
 sudo python3 papercut.py --server <ip>
 ```
 
-On the next print attempt, CUPS will show an authentication popup — enter your normal school/work username and password. Most applications remember this for future jobs.
+On the next print attempt, CUPS will show an authentication popup - enter your normal school/work username and password. Most applications remember this for future jobs.
 
 ## `lpadmin` fails during install
 
