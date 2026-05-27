@@ -136,7 +136,7 @@ sudo python3 papercut.py --server <ip-or-hostname>
 Install CUPS using the command for your distro in the table above.
 
 **Printers install but jobs fail with "document format not supported"**
-Re-run the script — it will patch the printer PPDs automatically:
+Re-run the script — it patches the printer PPDs and reloads cupsd so the fix takes effect immediately:
 ```bash
 sudo python3 papercut.py --server 10.1.1.12
 ```

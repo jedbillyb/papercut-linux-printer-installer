@@ -111,3 +111,20 @@ Run:
 sudo cupsenable <printer-name>
 sudo cupsaccept <printer-name>
 ```
+
+---
+
+## Jobs fail with "document format not supported"
+
+CUPS parses PPDs into an in-memory MIME database at startup and validates incoming jobs against that cache — not against the PPD file on disk. Re-running the script patches the PPD files and sends SIGHUP to cupsd to force a re-parse, so the fix takes effect immediately without a full restart:
+
+```bash
+sudo python3 papercut.py --server <ip>
+```
+
+If jobs still fail after re-running, restart cupsd manually to force a full reload:
+
+```bash
+sudo systemctl restart cups   # systemd
+sudo sv restart cupsd         # runit / Void Linux
+```

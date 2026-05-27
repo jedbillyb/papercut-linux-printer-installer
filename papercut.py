@@ -495,6 +495,7 @@ def install_printers(printers: list[dict]) -> None:
         sys.exit(1)
 
     ok = skipped = ppd_patched = 0
+    patched_names: list[str] = []
     for p in printers:
         name = _cups_name(p)
         if _run("lpstat", "-p", name):
@@ -504,6 +505,7 @@ def install_printers(printers: list[dict]) -> None:
             skipped += 1
             if patched:
                 ppd_patched += 1
+                patched_names.append(name)
             continue
         print(f"  (new)    {name}...", end=" ", flush=True)
         if _run("lpadmin", "-p", name, "-v", _ipp_url(p),
@@ -512,10 +514,35 @@ def install_printers(printers: list[dict]) -> None:
             _run("cupsaccept", name)
             if _patch_ppd_pdf(name):
                 ppd_patched += 1
+                patched_names.append(name)
             print("done")
             ok += 1
         else:
             print("FAILED")
+
+    if patched_names:
+        # cupsd parses PPDs into an in-memory MIME database on startup; lpadmin -P
+        # updates the file but the running daemon keeps the stale parse until SIGHUP.
+        print("Reloading cupsd...", end=" ", flush=True)
+        subprocess.run(["pkill", "-HUP", "cupsd"], check=False)
+        time.sleep(0.5)
+        failed_verify = []
+        for name in patched_names:
+            result = subprocess.run(
+                ["ipptool", "-tv", f"ipp://localhost:631/printers/{name}",
+                 "/usr/share/cups/ipptool/get-printer-attributes.test"],
+                capture_output=True, text=True,
+            )
+            if "application/pdf" not in result.stdout:
+                failed_verify.append(name)
+        if not failed_verify:
+            print("done")
+        if failed_verify:
+            print(f"\nError: PPD patch did not take effect for: {', '.join(failed_verify)}")
+            print("Try restarting CUPS manually and re-running the script:")
+            print("  sudo systemctl restart cups   # systemd")
+            print("  sudo sv restart cupsd         # runit/Void")
+            sys.exit(1)
 
     ready = ok + skipped
     print(f"\n{ready}/{len(printers)} printers ready.")
