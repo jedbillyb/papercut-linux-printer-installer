@@ -442,57 +442,27 @@ def _cups_ok() -> bool:
     return _run("which", "lpadmin")
 
 
-# Maps PPD PageSize names to their standard IPP media keywords.
-# Without these, the CUPS IPP backend sends PageSize as an opaque PPD attribute
-# (nameWithoutLanguage) that Mobility Print ignores, causing A4 fallback even
-# when A3 (or another size) is explicitly selected in the print dialog.
-_IPP_PAGE_SIZE_MAP = {
-    "A1":      "iso_a1_594x841mm",
-    "A2":      "iso_a2_420x594mm",
-    "A3":      "iso_a3_297x420mm",
-    "A4":      "iso_a4_210x297mm",
-    "A5":      "iso_a5_148x210mm",
-    "B4":      "jis_b4_257x364mm",
-    "B5":      "jis_b5_182x257mm",
-    "Legal":   "na_legal_8.5x14in",
-    "Letter":  "na_letter_8.5x11in",
-    "Postcard": "jpn_hagaki_100x148mm",
-    "Tabloid": "na_ledger_11x17in",
-}
+def _patch_ppd_pdf(name: str) -> bool:
+    """Add a direct PDF pass-through to the printer's PPD if missing.
 
+    The 'everywhere' PPD only declares application/vnd.cups-pdf as input,
+    which requires pdftopdf (cups-filters) to process. Adding a direct
+    application/pdf pass-through lets CUPS send PDF jobs straight to
+    Mobility Print without any conversion filter.
 
-def _patch_ppd(name: str) -> bool:
-    """Patch the printer's PPD with two fixes applied in one lpadmin call:
-
-    1. PDF pass-through filter — lets CUPS send PDFs directly to Mobility Print
-       without needing cups-filters for conversion.
-    2. cupsPageSizeName entries — maps PPD PageSize names to IPP media keywords
-       so the CUPS backend sends e.g. media=iso_a3_297x420mm instead of the
-       opaque PageSize=A3 custom attribute that Mobility Print ignores.
-
-    Caller is responsible for sending SIGHUP to cupsd after this, since cupsd
-    caches the parsed PPD in memory and lpadmin -P alone does not trigger reload.
+    Writes the patched PPD via lpadmin -P. The caller is responsible
+    for sending SIGHUP to cupsd afterwards to force a re-parse, since
+    cupsd caches the parsed PPD in memory and lpadmin -P alone does
+    not reliably trigger a reload.
     """
     ppd_path = f"/etc/cups/ppd/{name}.ppd"
     tmp_path = f"/tmp/papercut-{name}.ppd"
     try:
         with open(ppd_path) as f:
             content = f.read()
-
-        patches = []
-
-        if "application/pdf application/pdf" not in content:
-            patches.append('*cupsFilter2: "application/pdf application/pdf 0 -"')
-
-        if "*cupsPageSizeName" not in content:
-            for ppd_name, ipp_name in _IPP_PAGE_SIZE_MAP.items():
-                if f"*PageSize {ppd_name}:" in content:
-                    patches.append(f'*cupsPageSizeName {ppd_name}: "{ipp_name}"')
-
-        if not patches:
+        if "application/pdf application/pdf" in content:
             return False
-
-        patched = content + "\n" + "\n".join(patches) + "\n"
+        patched = content + '\n*cupsFilter2: "application/pdf application/pdf 0 -"\n'
         with open(tmp_path, "w") as f:
             f.write(patched)
         ok = _run("lpadmin", "-p", name, "-P", tmp_path)
@@ -547,9 +517,7 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
                 ppd_needed = False
                 try:
                     with open(ppd_path) as f:
-                        c = f.read()
-                    ppd_needed = ("application/pdf application/pdf" not in c
-                                  or "*cupsPageSizeName" not in c)
+                        ppd_needed = "application/pdf application/pdf" not in f.read()
                 except (FileNotFoundError, PermissionError):
                     pass
                 suffix = " (would patch PPD)" if ppd_needed else ""
@@ -560,7 +528,7 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
 
         if already:
             _run("lpadmin", "-p", name, "-o", "auth-info-required=username,password")
-            patched = _patch_ppd(name)
+            patched = _patch_ppd_pdf(name)
             suffix = " (PPD patched)" if patched else ""
             print(f"  (skip)   {name}... already installed{suffix}")
             skipped += 1
@@ -574,7 +542,7 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
                 "-o", "auth-info-required=username,password"):
             _run("cupsenable", name)
             _run("cupsaccept", name)
-            if _patch_ppd(name):
+            if _patch_ppd_pdf(name):
                 ppd_patched += 1
                 patched_names.append(name)
             print("done")
