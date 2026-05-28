@@ -6,7 +6,7 @@
 [![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)](https://kernel.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Automatically discovers your PaperCut Mobility Print server and installs all available printers into CUPS as standard IPP Everywhere queues. Works on any distro that runs CUPS. On Linux, CUPS will show an authentication popup the first time you send a job — enter your normal school/work login credentials there.
+Automatically discovers your PaperCut Mobility Print server and installs all available printers into CUPS as standard IPP Everywhere queues. Works on any distro that runs CUPS. On Linux, CUPS will show an authentication popup the first time you send a job - enter your normal school/work login credentials there.
 
 ---
 
@@ -96,7 +96,7 @@ Fetching printer list... 4 printer(s) found
 Open any application and select a printer to test.
 ```
 
-Re-running the script is safe — already-installed printers are skipped:
+Re-running the script is safe - already-installed printers are skipped:
 
 ```
 Fetching printer list... 4 printer(s) found
@@ -124,7 +124,7 @@ PaperCut Mobility Print exposes each printer as a standard IPP endpoint. This sc
 1. **Discovers** the server using three methods in order:
    - mDNS broadcast (`_pc-printer-discovery._tcp`, `_ipp._tcp`, `_ipps._tcp`)
    - DNS lookup of common PaperCut hostnames via your default gateway
-   - Port scan — local and explicitly-routed subnets first, then the rest of the /16 matching the gateway
+   - Port scan - local and explicitly-routed subnets first, then the rest of the /16 matching the gateway
 2. **Fetches** the printer list from the Mobility Print API (no credentials required at install time)
 3. **Installs** each printer into CUPS via `lpadmin` using the `everywhere` (driverless) driver
 
@@ -142,7 +142,7 @@ sudo python3 papercut.py --server <ip-or-hostname>
 Install CUPS using the command for your distro in the table above.
 
 **Printers install but jobs fail with "document format not supported"**
-Re-run the script — it patches the printer PPDs and reloads cupsd so the fix takes effect immediately:
+Re-run the script - it patches the printer PPDs and reloads cupsd so the fix takes effect immediately:
 ```bash
 sudo python3 papercut.py --server 10.1.1.12
 ```

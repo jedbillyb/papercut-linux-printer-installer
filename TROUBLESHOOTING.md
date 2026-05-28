@@ -22,7 +22,17 @@ If your school uses strict VLAN segmentation (common in universities and larger 
 
 The simplest option. Ask your school's IT helpdesk for the PaperCut server IP address or hostname. They may know it as the "print server address."
 
-### Option 2 - Find it on a Windows machine that already has PaperCut installed
+### **Option 2 - Try the common PaperCut DNS hostname**
+
+Many schools configure a DNS entry specifically for PaperCut discovery. Try:
+
+```
+nslookup pc-printer-discovery
+```
+
+If this returns an IP, use that as your server address.
+
+### Option 3 - Find it on a Windows machine that already has PaperCut installed
 
 On a Windows PC that can already print via PaperCut, open a Command Prompt and run:
 
@@ -44,7 +54,7 @@ Look for a DNS suffix (e.g. `school.internal`) and try:
 nslookup papercut.school.internal
 ```
 
-### Option 3 - Check the PaperCut client config on Windows
+### Option 4 - Check the PaperCut client config on Windows
 
 If the PaperCut client is installed on a Windows machine, the server address is often stored in:
 
@@ -84,7 +94,7 @@ This bypasses all discovery and goes straight to fetching the printer list.
 
 ## Jobs send but nothing prints / no credential popup appeared
 
-PaperCut Mobility Print always requires user authentication to track quota — if CUPS doesn't know to ask for credentials, the job is sent without them and silently rejected by the server.
+PaperCut Mobility Print always requires user authentication to track quota - if CUPS doesn't know to ask for credentials, the job is sent without them and silently rejected by the server.
 
 This happens when `auth-info-required` was not set on the printer, which can occur if the printer was installed by an older version of this script.
 
@@ -94,7 +104,7 @@ Re-running the installer fixes all installed printers automatically:
 sudo python3 papercut.py --server <ip>
 ```
 
-On the next print attempt, CUPS will show an authentication popup — enter your normal school/work username and password. Most applications remember this for future jobs.
+On the next print attempt, CUPS will show an authentication popup - enter your normal school/work username and password. Most applications remember this for future jobs.
 
 ## `lpadmin` fails during install
 
