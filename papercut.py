@@ -443,36 +443,32 @@ def _cups_ok() -> bool:
 
 
 # Maps PPD PageSize names to their standard IPP media keywords.
-# Used to emit both *cupsPageSizeName and *cupsIPPAttr media/PageSize entries.
-# cupsIPPAttr causes the CUPS IPP backend to include media=<keyword> as a
-# proper IPP job attribute in the Create-Job request, instead of sending the
-# opaque PageSize=A3 custom attribute that Mobility Print ignores.
+# Without these, the CUPS IPP backend sends PageSize as an opaque PPD attribute
+# (nameWithoutLanguage) that Mobility Print ignores, causing A4 fallback even
+# when A3 (or another size) is explicitly selected in the print dialog.
 _IPP_PAGE_SIZE_MAP = {
-    "A1":       "iso_a1_594x841mm",
-    "A2":       "iso_a2_420x594mm",
-    "A3":       "iso_a3_297x420mm",
-    "A4":       "iso_a4_210x297mm",
-    "A5":       "iso_a5_148x210mm",
-    "B4":       "jis_b4_257x364mm",
-    "B5":       "jis_b5_182x257mm",
-    "Legal":    "na_legal_8.5x14in",
-    "Letter":   "na_letter_8.5x11in",
+    "A1":      "iso_a1_594x841mm",
+    "A2":      "iso_a2_420x594mm",
+    "A3":      "iso_a3_297x420mm",
+    "A4":      "iso_a4_210x297mm",
+    "A5":      "iso_a5_148x210mm",
+    "B4":      "jis_b4_257x364mm",
+    "B5":      "jis_b5_182x257mm",
+    "Legal":   "na_legal_8.5x14in",
+    "Letter":  "na_letter_8.5x11in",
     "Postcard": "jpn_hagaki_100x148mm",
-    "Tabloid":  "na_ledger_11x17in",
+    "Tabloid": "na_ledger_11x17in",
 }
 
 
 def _patch_ppd(name: str) -> bool:
-    """Patch the printer's PPD with three fixes applied in one lpadmin call:
+    """Patch the printer's PPD with two fixes applied in one lpadmin call:
 
     1. PDF pass-through filter — lets CUPS send PDFs directly to Mobility Print
        without needing cups-filters for conversion.
-    2. cupsPageSizeName entries — used by CUPS raster/PostScript pipelines to
-       map PPD page size names to IPP media keywords.
-    3. cupsIPPAttr media/PageSize entries — used by the CUPS IPP backend to
-       add media=<keyword> as a standard IPP job attribute in the Create-Job
-       request. Without this, PageSize=A3 is sent as a custom nameWithoutLanguage
-       attribute that Mobility Print ignores, causing A4 fallback.
+    2. cupsPageSizeName entries — maps PPD PageSize names to IPP media keywords
+       so the CUPS backend sends e.g. media=iso_a3_297x420mm instead of the
+       opaque PageSize=A3 custom attribute that Mobility Print ignores.
 
     Caller is responsible for sending SIGHUP to cupsd after this, since cupsd
     caches the parsed PPD in memory and lpadmin -P alone does not trigger reload.
@@ -492,11 +488,6 @@ def _patch_ppd(name: str) -> bool:
             for ppd_name, ipp_name in _IPP_PAGE_SIZE_MAP.items():
                 if f"*PageSize {ppd_name}:" in content:
                     patches.append(f'*cupsPageSizeName {ppd_name}: "{ipp_name}"')
-
-        if "*cupsIPPAttr media" not in content:
-            for ppd_name, ipp_name in _IPP_PAGE_SIZE_MAP.items():
-                if f"*PageSize {ppd_name}:" in content:
-                    patches.append(f'*cupsIPPAttr media/PageSize {ppd_name}: "{ipp_name}"')
 
         if not patches:
             return False
@@ -558,8 +549,7 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
                     with open(ppd_path) as f:
                         c = f.read()
                     ppd_needed = ("application/pdf application/pdf" not in c
-                                  or "*cupsPageSizeName" not in c
-                                  or "*cupsIPPAttr media" not in c)
+                                  or "*cupsPageSizeName" not in c)
                 except (FileNotFoundError, PermissionError):
                     pass
                 suffix = " (would patch PPD)" if ppd_needed else ""
