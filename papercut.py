@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import difflib
 import ipaddress
 import json
 import os
@@ -63,6 +64,23 @@ TOKEN_RE = re.compile(
 
 # Matches PaperCut IPP device URIs registered in CUPS
 _CUPS_PC_RE = re.compile(r"device for (\S+):\s+ipps?://[^:]+:\d+/printers/")
+
+# IPP/PWG media keyword mapping for PPD page size option names
+PAGE_SIZE_MAP = {
+    "A3":     "iso_a3_297x420mm",
+    "A4":     "iso_a4_210x297mm",
+    "A5":     "iso_a5_148x210mm",
+    "Letter": "na_letter_8.5x11in",
+    "Legal":  "na_legal_8.5x14in",
+}
+
+# Matches *PageSize / *PageRegion / *PaperDimension / *ImageableArea option lines
+_PAGESIZE_RE = re.compile(
+    r"^(\*(PageSize|PageRegion|PaperDimension|ImageableArea)\s+)"
+    r"(" + "|".join(re.escape(k) for k in PAGE_SIZE_MAP) + r")"
+    r"(/[^:]*)?(\s*:)",
+    re.MULTILINE,
+)
 
 
 # ── network helpers ───────────────────────────────────────────────────────────
@@ -442,13 +460,27 @@ def _cups_ok() -> bool:
     return _run("which", "lpadmin")
 
 
-def _patch_ppd_pdf(name: str) -> bool:
-    """Add a direct PDF pass-through to the printer's PPD if missing.
+def _apply_ppd_patches(content: str) -> str:
+    """Return PPD content with all required patches applied.
 
-    The 'everywhere' PPD only declares application/vnd.cups-pdf as input,
-    which requires pdftopdf (cups-filters) to process. Adding a direct
-    application/pdf pass-through lets CUPS send PDF jobs straight to
-    Mobility Print without any conversion filter.
+    Patches applied:
+    1. cupsFilter2 direct PDF pass-through (so CUPS doesn't invoke pdftopdf).
+    2. PageSize/PageRegion/PaperDimension/ImageableArea option keywords renamed
+       to their IPP/PWG equivalents so Mobility Print receives a recognised
+       media= attribute (e.g. iso_a4_210x297mm) instead of the PPD vendor name.
+    """
+    if "application/pdf application/pdf" not in content:
+        content += '\n*cupsFilter2: "application/pdf application/pdf 0 -"\n'
+
+    def _replace_size(m: re.Match) -> str:
+        return m.group(1) + PAGE_SIZE_MAP[m.group(3)] + (m.group(4) or "") + m.group(5)
+
+    content = _PAGESIZE_RE.sub(_replace_size, content)
+    return content
+
+
+def _patch_ppd_pdf(name: str) -> bool:
+    """Patch the printer's PPD in CUPS with all required fixes.
 
     Writes the patched PPD via lpadmin -P. The caller is responsible
     for sending SIGHUP to cupsd afterwards to force a re-parse, since
@@ -459,10 +491,10 @@ def _patch_ppd_pdf(name: str) -> bool:
     tmp_path = f"/tmp/papercut-{name}.ppd"
     try:
         with open(ppd_path) as f:
-            content = f.read()
-        if "application/pdf application/pdf" in content:
+            original = f.read()
+        patched = _apply_ppd_patches(original)
+        if patched == original:
             return False
-        patched = content + '\n*cupsFilter2: "application/pdf application/pdf 0 -"\n'
         with open(tmp_path, "w") as f:
             f.write(patched)
         ok = _run("lpadmin", "-p", name, "-P", tmp_path)
@@ -473,6 +505,37 @@ def _patch_ppd_pdf(name: str) -> bool:
         return ok
     except Exception:
         return False
+
+
+def _test_ppd(path: str) -> None:
+    """Dry-run PPD patch logic on an arbitrary file and print a unified diff.
+
+    Exits 0 if patches were applied, 1 if the file already looks clean.
+
+    To obtain a PPD for testing:
+      lpstat -l -p | grep PPD       # shows the PPD path for each printer
+      ls /etc/cups/ppd/             # or browse installed PPDs directly
+    """
+    try:
+        with open(path) as f:
+            original = f.read()
+    except OSError as e:
+        print(f"Error reading {path}: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    patched = _apply_ppd_patches(original)
+    if patched == original:
+        print("PPD already clean — no patches needed.")
+        sys.exit(1)
+
+    diff = difflib.unified_diff(
+        original.splitlines(keepends=True),
+        patched.splitlines(keepends=True),
+        fromfile=f"{path} (original)",
+        tofile=f"{path} (patched)",
+    )
+    sys.stdout.writelines(diff)
+    sys.exit(0)
 
 
 def _cups_papercut_printers() -> list[str]:
@@ -517,7 +580,8 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
                 ppd_needed = False
                 try:
                     with open(ppd_path) as f:
-                        ppd_needed = "application/pdf application/pdf" not in f.read()
+                        content = f.read()
+                    ppd_needed = _apply_ppd_patches(content) != content
                 except (FileNotFoundError, PermissionError):
                     pass
                 suffix = " (would patch PPD)" if ppd_needed else ""
@@ -622,12 +686,24 @@ def main() -> None:
                         help="list PaperCut printers currently installed by this tool and exit")
     parser.add_argument("--dry-run", action="store_true",
                         help="show what would be installed/skipped without modifying CUPS")
+    parser.add_argument(
+        "--test-ppd", metavar="FILE",
+        help=(
+            "test PPD patch logic on FILE without modifying CUPS (no sudo needed). "
+            "Prints a unified diff and exits 0 if patches were applied, 1 if already clean. "
+            "To get a PPD: lpstat -l -p | grep PPD  or ls /etc/cups/ppd/"
+        ),
+    )
     parser.add_argument("--pcap", metavar="FILE", help=argparse.SUPPRESS)
     parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     global _DEBUG
     _DEBUG = args.debug
+
+    if args.test_ppd:
+        _test_ppd(args.test_ppd)
+        return
 
     if args.pcap:
         printers = fetch_from_pcap(args.pcap)
