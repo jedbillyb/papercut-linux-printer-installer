@@ -65,22 +65,73 @@ TOKEN_RE = re.compile(
 # Matches PaperCut IPP device URIs registered in CUPS
 _CUPS_PC_RE = re.compile(r"device for (\S+):\s+ipps?://[^:]+:\d+/printers/")
 
-# IPP/PWG media keyword mapping for PPD page size option names
-PAGE_SIZE_MAP = {
-    "A3":     "iso_a3_297x420mm",
-    "A4":     "iso_a4_210x297mm",
-    "A5":     "iso_a5_148x210mm",
-    "Letter": "na_letter_8.5x11in",
-    "Legal":  "na_legal_8.5x14in",
-}
+_PT_TO_IPU = 2540.0 / 72  # PostScript points → IPP 1/100-mm units
 
-# Matches *PageSize / *PageRegion / *PaperDimension / *ImageableArea option lines
-_PAGESIZE_RE = re.compile(
-    r"^(\*(PageSize|PageRegion|PaperDimension|ImageableArea)\s+)"
-    r"(" + "|".join(re.escape(k) for k in PAGE_SIZE_MAP) + r")"
-    r"(/[^:]*)?(\s*:)",
-    re.MULTILINE,
+# Matches *cupsPageSizeName and *cupsIPPAttr media/PageSize lines respectively.
+# Groups: (1) keyword prefix  (2) PPD size name  (3) `: "`  (4) current value  (5) `"`
+_CUPS_PAGE_NAME_RE = re.compile(
+    r'^(\*cupsPageSizeName\s+)(\S+?)(\s*:\s*")([^"]+)(")', re.MULTILINE
 )
+_CUPS_IPP_ATTR_RE = re.compile(
+    r'^(\*cupsIPPAttr\s+media/PageSize\s+)(\S+?)(\s*:\s*")([^"]+)(")', re.MULTILINE
+)
+
+
+# ── IPP media-keyword helpers ─────────────────────────────────────────────────
+
+def _query_media_map(server: str, port: int, printer: str) -> dict[str, tuple[int, int]]:
+    """Return {server_keyword: (x_ipu, y_ipu)} from IPP get-printer-attributes.
+
+    Zips media-supported keywords with media-col-database dimension entries,
+    which PaperCut Mobility Print returns in the same order.  Returns {} on
+    any failure so callers degrade gracefully.
+    """
+    try:
+        result = subprocess.run(
+            ["ipptool", "-tv", f"ipp://{server}:{port}/printers/{printer}",
+             "/usr/share/cups/ipptool/get-printer-attributes.test"],
+            capture_output=True, text=True, timeout=15,
+        )
+        out = result.stdout
+        m_kw = re.search(r'media-supported\s+\([^)]+\)\s*=\s*([^\n]+)', out)
+        m_db = re.search(r'media-col-database\s+\([^)]+\)\s*=\s*([^\n]+)', out)
+        if not (m_kw and m_db):
+            return {}
+        keywords = [k.strip() for k in m_kw.group(1).split(',')]
+        dims = re.findall(r'x-dimension=(\d+)\s+y-dimension=(\d+)', m_db.group(1))
+        if len(dims) != len(keywords):
+            return {}
+        return {kw: (int(x), int(y)) for kw, (x, y) in zip(keywords, dims)}
+    except Exception:
+        return {}
+
+
+def _match_ppd_to_server(ppd_content: str, media_map: dict[str, tuple[int, int]]) -> dict[str, str]:
+    """Return {ppd_size_name: server_keyword} by matching *PaperDimension to media_map.
+
+    Converts PPD points to IPP 1/100-mm units and finds the closest server
+    keyword by Euclidean distance (orientation-agnostic).  Only accepts
+    matches within 0.1 mm total error.
+    """
+    if not media_map:
+        return {}
+    dim_re = re.compile(
+        r'^\*PaperDimension\s+(\S+?):\s+"([\d.]+)\s+([\d.]+)"', re.MULTILINE
+    )
+    out: dict[str, str] = {}
+    for m in dim_re.finditer(ppd_content):
+        ppd_name = m.group(1)
+        w_ipu = round(float(m.group(2)) * _PT_TO_IPU)
+        h_ipu = round(float(m.group(3)) * _PT_TO_IPU)
+        best_kw, best_dist = None, float('inf')
+        for kw, (x, y) in media_map.items():
+            dist = min(abs(w_ipu - x) + abs(h_ipu - y),
+                       abs(w_ipu - y) + abs(h_ipu - x))
+            if dist < best_dist:
+                best_dist, best_kw = dist, kw
+        if best_dist < 10 and best_kw:
+            out[ppd_name] = best_kw
+    return out
 
 
 # ── network helpers ───────────────────────────────────────────────────────────
@@ -460,26 +511,32 @@ def _cups_ok() -> bool:
     return _run("which", "lpadmin")
 
 
-def _apply_ppd_patches(content: str) -> str:
-    """Return PPD content with all required patches applied.
+def _apply_ppd_patches(content: str, ppd_to_server: dict[str, str] | None = None) -> str:
+    """Return PPD content with required patches applied.
 
     Patches applied:
-    1. cupsFilter2 direct PDF pass-through (so CUPS doesn't invoke pdftopdf).
-    2. PageSize/PageRegion/PaperDimension/ImageableArea option keywords renamed
-       to their IPP/PWG equivalents so Mobility Print receives a recognised
-       media= attribute (e.g. iso_a4_210x297mm) instead of the PPD vendor name.
+    1. cupsFilter2 direct PDF pass-through (prevents pdftopdf invocation).
+    2. cupsPageSizeName + cupsIPPAttr media/PageSize values replaced with the
+       server's actual media-supported keyword (e.g. ISO_A3) so CUPS sends the
+       keyword the server advertises rather than a PWG self-describing name it
+       doesn't recognise.  Requires ppd_to_server from _match_ppd_to_server().
     """
     if "application/pdf application/pdf" not in content:
         content += '\n*cupsFilter2: "application/pdf application/pdf 0 -"\n'
 
-    def _replace_size(m: re.Match) -> str:
-        return m.group(1) + PAGE_SIZE_MAP[m.group(3)] + (m.group(4) or "") + m.group(5)
+    if ppd_to_server:
+        def _rewrite(m: re.Match) -> str:
+            server_kw = ppd_to_server.get(m.group(2))
+            if server_kw and server_kw != m.group(4):
+                return m.group(1) + m.group(2) + m.group(3) + server_kw + m.group(5)
+            return m.group(0)
+        content = _CUPS_PAGE_NAME_RE.sub(_rewrite, content)
+        content = _CUPS_IPP_ATTR_RE.sub(_rewrite, content)
 
-    content = _PAGESIZE_RE.sub(_replace_size, content)
     return content
 
 
-def _patch_ppd_pdf(name: str) -> bool:
+def _patch_ppd_pdf(cups_name: str, server: str, port: int, ipp_printer: str) -> bool:
     """Patch the printer's PPD in CUPS with all required fixes.
 
     Writes the patched PPD via lpadmin -P. The caller is responsible
@@ -487,17 +544,19 @@ def _patch_ppd_pdf(name: str) -> bool:
     cupsd caches the parsed PPD in memory and lpadmin -P alone does
     not reliably trigger a reload.
     """
-    ppd_path = f"/etc/cups/ppd/{name}.ppd"
-    tmp_path = f"/tmp/papercut-{name}.ppd"
+    ppd_path = f"/etc/cups/ppd/{cups_name}.ppd"
+    tmp_path = f"/tmp/papercut-{cups_name}.ppd"
     try:
         with open(ppd_path) as f:
             original = f.read()
-        patched = _apply_ppd_patches(original)
+        media_map = _query_media_map(server, port, ipp_printer)
+        ppd_to_server = _match_ppd_to_server(original, media_map)
+        patched = _apply_ppd_patches(original, ppd_to_server)
         if patched == original:
             return False
         with open(tmp_path, "w") as f:
             f.write(patched)
-        ok = _run("lpadmin", "-p", name, "-P", tmp_path)
+        ok = _run("lpadmin", "-p", cups_name, "-P", tmp_path)
         try:
             os.unlink(tmp_path)
         except Exception:
@@ -505,6 +564,13 @@ def _patch_ppd_pdf(name: str) -> bool:
         return ok
     except Exception:
         return False
+
+
+def _device_uri_info(cups_name: str) -> tuple[str, int, str] | None:
+    """Return (server, port, ipp_printer) from CUPS lpstat -v, or None."""
+    result = subprocess.run(["lpstat", "-v", cups_name], capture_output=True, text=True)
+    m = re.search(r'ipps?://([^:/]+):(\d+)/printers/([^/\s]+)', result.stdout)
+    return (m.group(1), int(m.group(2)), m.group(3)) if m else None
 
 
 def _test_ppd(path: str) -> None:
@@ -523,7 +589,17 @@ def _test_ppd(path: str) -> None:
         print(f"Error reading {path}: {e}", file=sys.stderr)
         sys.exit(2)
 
-    patched = _apply_ppd_patches(original)
+    ppd_to_server: dict[str, str] = {}
+    basename = os.path.basename(path)
+    if basename.endswith(".ppd"):
+        info = _device_uri_info(basename[:-4])
+        if info:
+            server, port, ipp_printer = info
+            ppd_to_server = _match_ppd_to_server(original, _query_media_map(server, port, ipp_printer))
+    if not ppd_to_server:
+        print("Note: could not query server; only cupsFilter2 patch shown.", file=sys.stderr)
+
+    patched = _apply_ppd_patches(original, ppd_to_server)
     if patched == original:
         print("PPD already clean — no patches needed.")
         sys.exit(1)
@@ -574,6 +650,8 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
 
         already = _run("lpstat", "-p", name)
 
+        ipp_printer = p["name"].replace(" ", "+")
+
         if dry_run:
             if already:
                 ppd_path = f"/etc/cups/ppd/{name}.ppd"
@@ -581,7 +659,9 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
                 try:
                     with open(ppd_path) as f:
                         content = f.read()
-                    ppd_needed = _apply_ppd_patches(content) != content
+                    media_map = _query_media_map(p["server"], p["port"], ipp_printer)
+                    ppd_to_server = _match_ppd_to_server(content, media_map)
+                    ppd_needed = _apply_ppd_patches(content, ppd_to_server) != content
                 except (FileNotFoundError, PermissionError):
                     pass
                 suffix = " (would patch PPD)" if ppd_needed else ""
@@ -592,7 +672,7 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
 
         if already:
             _run("lpadmin", "-p", name, "-o", "auth-info-required=username,password")
-            patched = _patch_ppd_pdf(name)
+            patched = _patch_ppd_pdf(name, p["server"], p["port"], ipp_printer)
             suffix = " (PPD patched)" if patched else ""
             print(f"  (skip)   {name}... already installed{suffix}")
             skipped += 1
@@ -606,7 +686,7 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
                 "-o", "auth-info-required=username,password"):
             _run("cupsenable", name)
             _run("cupsaccept", name)
-            if _patch_ppd_pdf(name):
+            if _patch_ppd_pdf(name, p["server"], p["port"], ipp_printer):
                 ppd_patched += 1
                 patched_names.append(name)
             print("done")
