@@ -62,8 +62,81 @@ TOKEN_RE = re.compile(
     r"(https?)://([^/:]+)(?::\d+)?/printers/([^/]+)/users/(\d+)/([0-9a-f]{64})"
 )
 
-# Matches PaperCut IPP device URIs registered in CUPS
-_CUPS_PC_RE = re.compile(r"device for (\S+):\s+ipps?://[^:]+:\d+/printers/")
+# Matches PaperCut IPP device URIs registered in CUPS — covers both the
+# bare ipp/ipps backends used by older installs and the papercut-ipp(s)
+# wrapper installed by current versions of this script.
+_CUPS_PC_RE = re.compile(
+    r"device for (\S+):\s+(?:papercut-)?ipps?://[^:]+:\d+/printers/"
+)
+
+WRAPPER_BACKEND_DIR = "/usr/lib/cups/backend"
+WRAPPER_BACKEND_NAMES = ("papercut-ipp", "papercut-ipps")
+
+# Shell script installed as /usr/lib/cups/backend/papercut-ipp and
+# papercut-ipps.  CUPS picks a backend by URI scheme; the wrapper
+# rewrites PPD-style options the IPP backend would otherwise pass through
+# verbatim (PageSize=A3, Duplex=DuplexNoTumble) into the IPP attributes
+# PaperCut Mobility Print actually honours (media=ISO_A3, sides=...).
+#
+# Without this, jobs from the GTK/Firefox print dialog get `PageSize A3`
+# in the IPP request — the server doesn't recognise that name and prints
+# at its default size (A4).  Direct `lp -o media=ISO_A3` works because
+# `media` *is* a real IPP attribute.
+_WRAPPER_BACKEND_SCRIPT = r"""#!/bin/sh
+# Auto-installed by papercut.py — do not edit; re-run the installer to update.
+self=$(basename "$0")
+real=${self#papercut-}
+
+if [ $# -eq 0 ]; then
+    echo "network $self \"Unknown\" \"PaperCut option-translating wrapper ($real)\""
+    exit 0
+fi
+
+job=$1 user=$2 title=$3 copies=$4 options=$5
+shift 5
+
+ppd="/etc/cups/ppd/${PRINTER}.ppd"
+
+map_pagesize() {
+    val=$1
+    if [ -r "$ppd" ]; then
+        m=$(awk -v v="$val" '
+            /^\*cupsPageSizeName / {
+                k=$2; sub(/:$/,"",k)
+                gsub(/"/,"",$3)
+                if (k==v) { print $3; exit }
+            }' "$ppd")
+        if [ -n "$m" ]; then printf %s "$m"; return; fi
+    fi
+    printf %s "$val"
+}
+
+new=
+for tok in $options; do
+    case $tok in
+        PageSize=*)
+            new="$new media=$(map_pagesize "${tok#PageSize=}")"
+            ;;
+        Duplex=None|Duplex=False|Duplex=No)
+            new="$new sides=one-sided"
+            ;;
+        Duplex=DuplexNoTumble)
+            new="$new sides=two-sided-long-edge"
+            ;;
+        Duplex=DuplexTumble)
+            new="$new sides=two-sided-short-edge"
+            ;;
+        *)
+            new="$new $tok"
+            ;;
+    esac
+done
+
+DEVICE_URI=${DEVICE_URI#papercut-}
+export DEVICE_URI
+
+exec "/usr/lib/cups/backend/$real" "$job" "$user" "$title" "$copies" "${new# }" "$@"
+"""
 
 _PT_TO_IPU = 2540.0 / 72  # PostScript points → IPP 1/100-mm units
 
@@ -491,12 +564,34 @@ def fetch_from_pcap(path: str) -> list[dict]:
 # ── CUPS ──────────────────────────────────────────────────────────────────────
 
 def _ipp_url(p: dict) -> str:
-    scheme = "ipps" if p["scheme"] == "https" else "ipp"
+    # Route through the papercut-ipp wrapper backend so PPD-style options
+    # (PageSize, Duplex) get translated to IPP keywords PaperCut Mobility
+    # Print recognises.  See _WRAPPER_BACKEND_SCRIPT for the why.
+    scheme = "papercut-ipps" if p["scheme"] == "https" else "papercut-ipp"
     name   = p["name"].replace(" ", "+")
     uri    = f"{scheme}://{p['server']}:{p['port']}/printers/{name}"
     if p.get("token"):
         uri += f"/users/{p['user_id']}/{p['token']}"
     return uri
+
+
+def _install_wrapper_backend() -> None:
+    """Write /usr/lib/cups/backend/papercut-ipp(s) if missing or outdated."""
+    if not os.path.isdir(WRAPPER_BACKEND_DIR):
+        return
+    for name in WRAPPER_BACKEND_NAMES:
+        path = os.path.join(WRAPPER_BACKEND_DIR, name)
+        try:
+            with open(path) as f:
+                if f.read() == _WRAPPER_BACKEND_SCRIPT:
+                    continue
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        with open(path, "w") as f:
+            f.write(_WRAPPER_BACKEND_SCRIPT)
+        os.chmod(path, 0o700)  # CUPS requires backends to be 0700 and root-owned
 
 
 def _cups_name(p: dict) -> str:
@@ -569,7 +664,7 @@ def _patch_ppd_pdf(cups_name: str, server: str, port: int, ipp_printer: str) -> 
 def _device_uri_info(cups_name: str) -> tuple[str, int, str] | None:
     """Return (server, port, ipp_printer) from CUPS lpstat -v, or None."""
     result = subprocess.run(["lpstat", "-v", cups_name], capture_output=True, text=True)
-    m = re.search(r'ipps?://([^:/]+):(\d+)/printers/([^/\s]+)', result.stdout)
+    m = re.search(r'(?:papercut-)?ipps?://([^:/]+):(\d+)/printers/([^/\s]+)', result.stdout)
     return (m.group(1), int(m.group(2)), m.group(3)) if m else None
 
 
@@ -637,6 +732,9 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
             print("  Void          : sudo xbps-install cups")
             sys.exit(1)
 
+    if not dry_run:
+        _install_wrapper_backend()
+
     ok = skipped = ppd_patched = 0
     patched_names: list[str] = []
     seen_names: dict[str, str] = {}  # cups name → original printer name
@@ -671,7 +769,10 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
             continue
 
         if already:
-            _run("lpadmin", "-p", name, "-o", "auth-info-required=username,password")
+            # Re-set -v to migrate older installs from bare ipp:// to the
+            # papercut-ipp wrapper scheme.  Harmless if already correct.
+            _run("lpadmin", "-p", name, "-v", _ipp_url(p),
+                 "-o", "auth-info-required=username,password")
             patched = _patch_ppd_pdf(name, p["server"], p["port"], ipp_printer)
             suffix = " (PPD patched)" if patched else ""
             print(f"  (skip)   {name}... already installed{suffix}")
