@@ -128,37 +128,6 @@ sudo cupsaccept <printer-name>
 
 ---
 
-## Print dialog page size selection doesn't work (jobs print on A4 instead of A3 etc.)
-
-When printing from a GTK application (Firefox, LibreOffice, GNOME apps), selecting a non-default paper size like A3 in the print dialog often has no effect — the job prints on A4 regardless.
-
-**Why it happens:** The GTK print dialog sets the PPD option `PageSize=A3`, which CUPS passes to the Mobility Print server as a vendor-specific attribute. Mobility Print ignores unknown vendor attributes and applies its own default paper size. For Mobility Print to honour the selection, the job needs to include the standard IPP `media` attribute (e.g. `media=iso_a3_297x420mm`), which the GTK dialog does not set.
-
-**Workaround — print from the command line:**
-
-```bash
-lp -d <printer-name> -o media=iso_a3_297x420mm /path/to/file.pdf
-```
-
-Common media values:
-
-| Size    | media value             |
-|---------|-------------------------|
-| A3      | `iso_a3_297x420mm`      |
-| A4      | `iso_a4_210x297mm`      |
-| A5      | `iso_a5_148x210mm`      |
-| Letter  | `na_letter_8.5x11in`    |
-| Legal   | `na_legal_8.5x14in`     |
-| Tabloid | `na_ledger_11x17in`     |
-
-To print double-sided at the same time:
-
-```bash
-lp -d <printer-name> -o media=iso_a3_297x420mm -o sides=two-sided-long-binding /path/to/file.pdf
-```
-
----
-
 ## Jobs fail with "document format not supported"
 
 CUPS parses PPDs into an in-memory MIME database at startup and validates incoming jobs against that cache - not against the PPD file on disk. Re-running the script patches the PPD files and sends SIGHUP to cupsd to force a re-parse, so the fix takes effect immediately without a full restart:
