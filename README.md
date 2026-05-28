@@ -148,6 +148,9 @@ sudo python3 papercut.py --server 10.1.1.12
 ```
 If the problem persists, install `cups-filters` for your distro (adds PDF conversion support).
 
+**Print dialog selects A3 (or other size) but job prints on A4**
+Use `lp -o media=iso_a3_297x420mm` from the command line instead — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the full explanation and a media size reference table.
+
 **Printers install but jobs don't print**
 Make sure your account has print credit/quota remaining in PaperCut.
 
