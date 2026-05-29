@@ -138,6 +138,20 @@ sudo cupsaccept <printer-name>
 
 ---
 
+## Non-default paper sizes (A3, Letter, etc.) print as A4
+
+PaperCut Mobility Print uses its own non-standard media keywords and ignores PPD-style option names sent by the GTK/Firefox print dialog. The installer works around both issues automatically, but older installs (before v1.0.4) may not have the fix applied.
+
+Re-run the installer to patch existing printers:
+
+```bash
+sudo python3 papercut.py --server <ip>
+```
+
+This rewrites the PPD's media keywords to match the server's exact values and installs a backend wrapper that translates `PageSize=A3` into the `media=` IPP attribute PaperCut actually honours. After re-running, select your paper size in the print dialog as normal.
+
+---
+
 ## Jobs fail with "document format not supported"
 
 CUPS parses PPDs into an in-memory MIME database at startup and validates incoming jobs against that cache - not against the PPD file on disk. Re-running the script patches the PPD files and sends SIGHUP to cupsd to force a re-parse, so the fix takes effect immediately without a full restart:

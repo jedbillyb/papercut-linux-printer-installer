@@ -837,6 +837,24 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
         print("Open any application and select a printer to test.")
 
 
+def _remove_wrapper_backends() -> None:
+    """Remove papercut-ipp(s) backend scripts if no PaperCut printers remain."""
+    if _cups_papercut_printers():
+        return
+    removed = []
+    for name in WRAPPER_BACKEND_NAMES:
+        path = os.path.join(WRAPPER_BACKEND_DIR, name)
+        try:
+            os.unlink(path)
+            removed.append(name)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"  Warning: could not remove {path}: {e}")
+    if removed:
+        print(f"  Removed backend wrapper(s): {', '.join(removed)}")
+
+
 def remove_printers(names: list[str]) -> None:
     if os.geteuid() != 0:
         print("Run with sudo to remove printers.")
@@ -850,6 +868,7 @@ def remove_printers(names: list[str]) -> None:
         else:
             print("FAILED")
     print(f"\n{ok}/{len(names)} printer(s) removed.")
+    _remove_wrapper_backends()
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
