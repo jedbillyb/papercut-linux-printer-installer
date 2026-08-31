@@ -166,3 +166,71 @@ If jobs still fail after re-running, restart cupsd manually to force a full relo
 sudo systemctl restart cups   # systemd
 sudo sv restart cupsd         # runit / Void Linux
 ```
+
+## Stapling does nothing on a normal queue
+
+Expected. Mobility Print cannot staple. Check for yourself:
+
+```bash
+curl http://YOUR-SERVER:9163/printers
+```
+
+Every queue reports only `{mediaSizes, resolutions, color, duplex}`. There is no
+finishing field, so `-o finishings=4`, `-o StapleLocation=...` and every other variant
+are accepted and silently discarded. Do not keep trying different values.
+
+Use `--finishing` with your printer's own driver instead. See "Stapling and hole punch"
+in the README.
+
+## Finishing queue hangs on "Connecting to printer"
+
+The queue cannot reach LPD on the server.
+
+```bash
+# Is the LPD port open?
+nc -vz YOUR-SERVER 515
+
+# Is the server address being routed somewhere unexpected?
+ip route get YOUR-SERVER-IP
+```
+
+A split-tunnel VPN is the usual cause. Broad routes such as `8.0.0.0/6` can swallow a
+private server address and send print traffic down the tunnel, where it times out.
+Add a more specific route back to your LAN gateway:
+
+```bash
+sudo ip route replace 10.1.1.0/24 via YOUR-LAN-GATEWAY
+```
+
+Re-apply it when the VPN comes up and when the network changes. Wi-Fi re-association
+drops interface routes, so a VPN-only hook is not enough on a laptop.
+
+## Finishing install says "No finishing command found in the driver output"
+
+The driver installed, but it did not emit a finishing command for your printer. Usually
+it is the wrong driver: the right brand but the wrong model or generation. Re-check the
+model on the machine itself, or in the PaperCut web interface at
+`http://YOUR-SERVER:9191`.
+
+The queues still print normally. They just will not staple.
+
+## Finishing install fails with "No .deb inside"
+
+You downloaded the Red Hat package. Fetch the Ubuntu or Debian one instead. If your
+vendor ships only an `.rpm`, unpack it yourself and pass the directory:
+
+```bash
+rpm2cpio driver.rpm | cpio -idmv -D ~/driver-files
+sudo python3 papercut.py --finishing --driver ~/driver-files
+```
+
+## Still stuck?
+
+Ask. I would rather help than have you give up on it.
+
+- **[Open an issue](https://github.com/jedbillyb/papercut-linux-printer-installer/issues)** - best for anything others might hit too
+- **Email** - <jedbillyb@gmail.com>
+- **Web** - [jedbillyb.com](https://jedbillyb.com)
+
+Include your distro, the output of `python3 papercut.py --debug`, and
+`curl http://YOUR-SERVER:9163/printers` if you can reach the server.

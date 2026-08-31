@@ -8,7 +8,12 @@ to CUPS in one shot.
 Usage:
     sudo python3 papercut.py
     sudo python3 papercut.py --server 10.10.5.19
+    sudo python3 papercut.py --finishing --driver ~/Downloads/driver.zip
     sudo python3 papercut.py --remove
+
+Help, bug reports and "it does not work on my school's setup" are all welcome:
+https://github.com/jedbillyb/papercut-linux-printer-installer/issues
+jedbillyb@gmail.com  |  https://jedbillyb.com
 """
 
 import argparse
@@ -871,6 +876,376 @@ def remove_printers(names: list[str]) -> None:
     _remove_wrapper_backends()
 
 
+# ── vendor drivers and finishing queues ───────────────────────────────────────
+#
+# Mobility Print cannot staple.  Its capability model, served verbatim at
+# http://<server>:9163/printers, is only:
+#
+#     {mediaSizes, resolutions, color, duplex}
+#
+# It inherits that schema from Google Cloud Print, which has no finishing
+# field at all, so an IPP "finishings" attribute sent to a Mobility Print
+# queue is accepted and then silently dropped.  No amount of picking
+# different finishings enums changes this.
+#
+# Windows staples because PaperCut Print Deploy hands it a real vendor
+# driver, which writes the finishing command into the print data itself as
+# PJL (@PJL SET STAPLE=TOPLEFT) before the job ever reaches the server.
+# The same trick works on Linux: install the vendor PPD plus its filters,
+# then point a queue at the server's LPD port instead of Mobility Print.
+#
+# The vendor driver is NOT shipped with this tool.  Vendor licences
+# generally forbid public redistribution, so you supply the package.
+
+LPD_PORT = 515
+
+# Queues this tool creates for finishing are named "<Printer>-Finishing" and
+# sit alongside the plain IPP queue rather than replacing it.  The IPP queue
+# stays the better default: driverless, no vendor binaries, nothing to rot.
+FINISHING_SUFFIX = "-Finishing"
+
+VENDOR_PPD_DIR  = "/usr/share/ppd/papercut-vendor"
+CUPS_FILTER_DIR = "/usr/lib/cups/filter"
+
+_CUPS_FINISHING_RE = re.compile(
+    r"device for (\S+" + re.escape(FINISHING_SUFFIX) + r"):\s+lpd://"
+)
+
+# Vendors namespace finishing options differently (FFStaple on Fujifilm,
+# StapleLocation on Ricoh), so match the meaningful part of the keyword
+# rather than a fixed list of names.
+_FINISHING_KEYWORDS = ("staple", "punch", "finish", "fold", "stitch", "bind")
+
+_PPD_OPENUI_RE     = re.compile(r"^\*OpenUI\s+\*([A-Za-z0-9_]+)", re.M)
+_PPD_CUPSFILTER_RE = re.compile(r'^\*cupsFilter2?:\s*"([^"]+)"', re.M)
+
+
+def _ar_members(path: str) -> dict[str, bytes]:
+    """Parse a .deb (ar archive) without needing binutils installed."""
+    members: dict[str, bytes] = {}
+    with open(path, "rb") as fh:
+        if fh.read(8) != b"!<arch>\n":
+            return members
+        while True:
+            header = fh.read(60)
+            if len(header) < 60:
+                break
+            name = header[0:16].decode("ascii", "replace").strip().rstrip("/")
+            try:
+                size = int(header[48:58].decode("ascii").strip())
+            except ValueError:
+                break
+            members[name] = fh.read(size)
+            if size % 2:
+                fh.read(1)
+    return members
+
+
+def _extract_vendor_package(path: str, dest: str) -> bool:
+    """Unpack a vendor driver package into dest.
+
+    Accepts the .zip a vendor portal hands you, a .deb, or a directory that
+    has already been unpacked.  Returns True if anything was extracted.
+    """
+    import shutil
+    import tarfile
+    import zipfile
+
+    if os.path.isdir(path):
+        shutil.copytree(path, dest, dirs_exist_ok=True)
+        return True
+
+    lowered = path.lower()
+
+    if lowered.endswith(".zip"):
+        staging = os.path.join(dest, "_zip")
+        os.makedirs(staging, exist_ok=True)
+        with zipfile.ZipFile(path) as zf:
+            zf.extractall(staging)
+        # Vendor zips wrap the real package; recurse into the first .deb.
+        for root, _dirs, files in os.walk(staging):
+            for fname in files:
+                if fname.lower().endswith(".deb"):
+                    return _extract_vendor_package(os.path.join(root, fname), dest)
+        print(f"  No .deb inside {os.path.basename(path)}.")
+        print("  If you downloaded the Red Hat package, fetch the Ubuntu/Debian one instead.")
+        return False
+
+    if lowered.endswith(".deb"):
+        members = _ar_members(path)
+        data = next((v for k, v in members.items() if k.startswith("data.tar")), None)
+        if data is None:
+            return False
+        blob = os.path.join(dest, "data.tar")
+        with open(blob, "wb") as fh:
+            fh.write(data)
+        with tarfile.open(blob) as tf:
+            tf.extractall(dest)
+        os.unlink(blob)
+        return True
+
+    print(f"  Unsupported package type: {os.path.basename(path)}")
+    print("  Supply the vendor's .zip or .deb, or a directory you unpacked yourself.")
+    return False
+
+
+def _find_driver_files(root: str) -> tuple[str | None, list[str]]:
+    """Locate the PPD and any CUPS filters inside an unpacked vendor package."""
+    ppd: str | None = None
+    filters: list[str] = []
+    for dirpath, _dirs, files in os.walk(root):
+        for fname in files:
+            full = os.path.join(dirpath, fname)
+            if fname.lower().endswith(".ppd") and ppd is None:
+                ppd = full
+            elif os.sep + "cups" + os.sep + "filter" + os.sep in full + os.sep:
+                filters.append(full)
+    return ppd, filters
+
+
+def _ppd_finishing_options(ppd_path: str) -> dict[str, list[str]]:
+    """Return the finishing options a PPD exposes, as {option: [values]}."""
+    try:
+        with open(ppd_path, encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+    except OSError:
+        return {}
+
+    found: dict[str, list[str]] = {}
+    for option in _PPD_OPENUI_RE.findall(content):
+        if not any(k in option.lower() for k in _FINISHING_KEYWORDS):
+            continue
+        values = re.findall(
+            r"^\*" + re.escape(option) + r"\s+([A-Za-z0-9_]+)", content, re.M
+        )
+        if values:
+            found[option] = values
+    return found
+
+
+def _ppd_pdf_filter(ppd_path: str) -> str | None:
+    """Return the filter a PPD uses for application/pdf input."""
+    try:
+        with open(ppd_path, encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+    except OSError:
+        return None
+    for rule in _PPD_CUPSFILTER_RE.findall(content):
+        parts = rule.split()
+        if parts and parts[0] == "application/pdf" and parts[-1] not in ("-", ""):
+            return parts[-1]
+    return None
+
+
+def _blank_pdf() -> bytes:
+    """A minimal one-page A4 PDF, used to preview filter output."""
+    objs = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]/Resources<<>>>>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj" % i + body + b"endobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n" % (len(objs) + 1)
+    out += b"0000000000 65535 f \n"
+    for off in offsets:
+        out += b"%010d 00000 n \n" % off
+    out += b"trailer<</Size %d/Root 1 0 R>>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objs) + 1, xref)
+    return bytes(out)
+
+
+def _pjl_preview(ppd_path: str, filter_name: str, options: str,
+                 printer: str) -> list[str]:
+    """Run a vendor filter on a blank page and return the @PJL lines it emits.
+
+    This proves a finishing option actually reaches the printer without
+    printing anything.  If the staple command is absent here it will be
+    absent on paper too.
+
+    Two traps, both of which show up as an immediate segfault:
+
+    * the filter expects the environment cupsd sets up, hence the env block
+    * PRINTER must name a queue that actually exists in CUPS.  The filter
+      looks it up and dereferences the result without checking, so a
+      placeholder name crashes it.  Call this only after the queue is made.
+    """
+    import tempfile
+
+    binary = os.path.join(CUPS_FILTER_DIR, filter_name)
+    if not os.path.isfile(binary):
+        return []
+
+    env = dict(os.environ)
+    env.update({
+        "PPD": ppd_path,
+        "PRINTER": printer,
+        "CUPS_SERVERROOT": "/etc/cups",
+        "CUPS_DATADIR": "/usr/share/cups",
+        "CUPS_CACHEDIR": "/var/cache/cups",
+        "CUPS_STATEDIR": "/run/cups",
+        "RIP_CACHE": "8m",
+        "SOFTWARE": "CUPS/2.4",
+        "CHARSET": "utf-8",
+        "CONTENT_TYPE": "application/pdf",
+        "TMPDIR": tempfile.gettempdir(),
+    })
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(_blank_pdf())
+        pdf_path = tmp.name
+
+    try:
+        proc = subprocess.run(
+            [binary, "1", os.environ.get("USER", "root"), "pjl-preview", "1",
+         options, pdf_path],
+            capture_output=True, timeout=60, env=env,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    finally:
+        os.unlink(pdf_path)
+
+    head = proc.stdout[:8192].decode("latin-1", "replace")
+    return [ln.strip() for ln in head.splitlines() if "@PJL" in ln]
+
+
+def _install_driver_files(ppd_src: str, filters: list[str]) -> str | None:
+    """Copy a vendor PPD and its filters into place.  Returns the PPD path."""
+    import shutil
+
+    os.makedirs(VENDOR_PPD_DIR, exist_ok=True)
+    ppd_dest = os.path.join(VENDOR_PPD_DIR, os.path.basename(ppd_src))
+    try:
+        shutil.copy2(ppd_src, ppd_dest)
+        os.chmod(ppd_dest, 0o644)
+        for filt in filters:
+            dest = os.path.join(CUPS_FILTER_DIR, os.path.basename(filt))
+            shutil.copy2(filt, dest)
+            os.chmod(dest, 0o755)
+    except OSError as exc:
+        print(f"  Could not install driver files: {exc}")
+        return None
+    return ppd_dest
+
+
+def _lpd_uri(server: str, queue: str, user: str) -> str:
+    # LPD has no authentication.  The username in the URI is the only thing
+    # PaperCut can attribute the job to, so it must be the PaperCut login,
+    # not the local Linux user.
+    from urllib.parse import quote
+    return f"lpd://{quote(user, safe='')}@{server}:{LPD_PORT}/{quote(queue, safe='')}"
+
+
+def _cups_finishing_printers() -> list[str]:
+    """Return names of finishing queues previously installed by this tool."""
+    result = subprocess.run(["lpstat", "-v"], capture_output=True, text=True)
+    return [
+        m.group(1)
+        for line in result.stdout.splitlines()
+        if (m := _CUPS_FINISHING_RE.match(line))
+    ]
+
+
+def install_finishing_queues(printers: list[dict], driver: str, user: str,
+                             dry_run: bool = False) -> None:
+    """Install LPD queues that render through a vendor PPD so finishing works."""
+    import tempfile
+
+    if not dry_run and os.geteuid() != 0:
+        print("Run with sudo to install finishing queues.")
+        sys.exit(1)
+
+    workdir = tempfile.mkdtemp(prefix="papercut-driver-")
+    print(f"Unpacking driver: {os.path.basename(driver)}...", end=" ", flush=True)
+
+    if driver.lower().endswith(".ppd"):
+        ppd_src, filters = driver, []
+        print("PPD supplied directly")
+    else:
+        if not _extract_vendor_package(driver, workdir):
+            print("failed.")
+            sys.exit(1)
+        ppd_src, filters = _find_driver_files(workdir)
+        if not ppd_src:
+            print("failed.")
+            print("No .ppd found in that package.")
+            sys.exit(1)
+        print(f"found {os.path.basename(ppd_src)} + {len(filters)} filter(s)")
+
+    finishing = _ppd_finishing_options(ppd_src)
+    if not finishing:
+        print()
+        print("That PPD exposes no finishing options, so it cannot staple.")
+        print("Check you downloaded the driver for this exact printer model.")
+        sys.exit(1)
+
+    print("\nFinishing options this driver supports:")
+    for option, values in finishing.items():
+        print(f"  {option:<20} {' '.join(values)}")
+
+    if dry_run:
+        print(f"\nWould install {len(printers)} finishing queue(s). No changes made.")
+        return
+
+    ppd_path = _install_driver_files(ppd_src, filters)
+    if not ppd_path:
+        sys.exit(1)
+
+    print()
+    ok = 0
+    first_queue = ""
+    for p in printers:
+        name = _cups_name(p) + FINISHING_SUFFIX
+        uri  = _lpd_uri(p["server"], p["name"], user)
+        print(f"  {name}...", end=" ", flush=True)
+        if _run("lpadmin", "-p", name, "-v", uri, "-P", ppd_path,
+                "-E", "-D", f"{p['name']} (finishing)",
+                "-o", "printer-is-shared=false"):
+            _run("cupsenable", name)
+            _run("cupsaccept", name)
+            print("done")
+            ok += 1
+            first_queue = first_queue or name
+        else:
+            print("FAILED")
+
+    # Prove the driver emits a finishing command, without printing a page.
+    # Has to happen after a queue exists; see _pjl_preview.
+    filter_name = _ppd_pdf_filter(ppd_src)
+    if first_queue and filter_name and filters:
+        option, values = next(iter(finishing.items()))
+        chosen = next((v for v in values if v.lower() not in ("none", "off")), None)
+        if chosen:
+            lines = _pjl_preview(ppd_path, filter_name, f"{option}={chosen}",
+                                 first_queue)
+            hits = [ln for ln in lines
+                    if any(k in ln.lower() for k in _FINISHING_KEYWORDS)]
+            print(f"\nChecking {option}={chosen} reaches the printer:")
+            if hits:
+                for ln in hits:
+                    print(f"  {ln}")
+                print("  Driver emits the finishing command.")
+            else:
+                print("  No finishing command found in the driver output.")
+                print("  The queues still work for normal printing, but this")
+                print("  driver may not drive the finisher on this model.")
+
+    option = next(iter(finishing))
+    values = [v for v in finishing[option] if v.lower() not in ("none", "off")]
+    print(f"\n{ok}/{len(printers)} finishing queue(s) installed.")
+    print("\nPrint with finishing:")
+    print(f"  lp -d <Printer>{FINISHING_SUFFIX} -o {option}={values[0] if values else '<value>'} "
+          "-o Duplex=DuplexNoTumble <file>")
+    print("\nIf a job hangs on \"Connecting to printer\", the LPD port is not")
+    print(f"reachable. Check port {LPD_PORT} is open on the server, and that a VPN")
+    print("is not routing the server address into a tunnel.")
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -886,6 +1261,15 @@ def main() -> None:
                         help="list PaperCut printers currently installed by this tool and exit")
     parser.add_argument("--dry-run", action="store_true",
                         help="show what would be installed/skipped without modifying CUPS")
+    parser.add_argument("--finishing", action="store_true",
+                        help="also install LPD queues that can staple/hole-punch "
+                             "(needs --driver; Mobility Print cannot do finishing)")
+    parser.add_argument("--driver", metavar="PATH",
+                        help="vendor driver package (.zip/.deb), unpacked directory, "
+                             "or a .ppd - required by --finishing")
+    parser.add_argument("--papercut-user", metavar="NAME",
+                        help="PaperCut username for finishing queues; LPD has no auth, "
+                             "so this is what the job is billed to")
     parser.add_argument(
         "--test-ppd", metavar="FILE",
         help=(
@@ -900,6 +1284,18 @@ def main() -> None:
 
     global _DEBUG
     _DEBUG = args.debug
+
+    if args.driver and not args.finishing:
+        print("--driver only applies with --finishing.")
+        sys.exit(1)
+    if args.finishing and not args.driver:
+        print("--finishing needs --driver <path to your vendor driver package>.")
+        print()
+        print("This tool does not ship vendor drivers; their licences forbid")
+        print("public redistribution. Download the Linux driver for your printer")
+        print("model from the manufacturer, then pass the file here.")
+        print("See README.md, section \"Stapling and hole punch\".")
+        sys.exit(1)
 
     if args.test_ppd:
         _test_ppd(args.test_ppd)
@@ -917,13 +1313,14 @@ def main() -> None:
         return
 
     if args.list:
-        names = _cups_papercut_printers()
-        for n in names:
+        for n in _cups_papercut_printers():
             print(n)
+        for n in _cups_finishing_printers():
+            print(f"{n} (finishing)")
         sys.exit(0)
 
     if args.remove:
-        names = _cups_papercut_printers()
+        names = _cups_papercut_printers() + _cups_finishing_printers()
         if not names:
             print("No PaperCut printers found in CUPS.")
             sys.exit(0)
@@ -957,6 +1354,16 @@ def main() -> None:
         print(f"  {p['name']}")
     print()
     install_printers(printers, dry_run=args.dry_run)
+
+    if args.finishing:
+        user = args.papercut_user
+        if not user:
+            user = input("PaperCut username (for finishing job accounting): ").strip()
+        if not user:
+            print("A PaperCut username is required for finishing queues.")
+            sys.exit(1)
+        print()
+        install_finishing_queues(printers, args.driver, user, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
