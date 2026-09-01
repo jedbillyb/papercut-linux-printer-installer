@@ -152,6 +152,31 @@ This rewrites the PPD's media keywords to match the server's exact values and in
 
 ---
 
+## Immutable / read-only systems (Fedora Silverblue, Kinoite, openSUSE MicroOS, SteamOS)
+
+On these distros `/usr` is a read-only ostree/btrfs snapshot, so the installer cannot write its option-translating backend wrapper to `/usr/lib/cups/backend`.
+
+**Printers still install and print.** The installer detects the read-only mount, prints a note, and falls back to the stock `ipp`/`ipps` backends. The PPD media-keyword patch (which lives in `/etc/cups/ppd`, writable everywhere) still applies, so the printer's paper sizes are still advertised correctly.
+
+What you lose is the translation of PPD-style options into IPP attributes. Paper size and duplex chosen in the GTK/Firefox print dialog may be ignored by the PaperCut server, which then falls back to its own default (usually A4, single-sided). Pass the IPP options directly instead:
+
+```bash
+lp -d PRINTER -o media=ISO_A3 -o sides=two-sided-long-edge file.pdf
+```
+
+If you want the wrapper anyway, unlock `/usr` first:
+
+```bash
+sudo rpm-ostree usroverlay          # Silverblue / Kinoite - transient
+sudo python3 papercut.py --server <ip>
+```
+
+Note that `usroverlay` is discarded on reboot, and after a reboot the wrapper backend is gone while the queue's device URI still points at `papercut-ipp://`, which makes jobs fail. Re-run the installer without the overlay to move the queues back to the plain `ipp://` backend.
+
+`--finishing` cannot work on an immutable system at all: vendor print filters are binaries that CUPS will only load from `/usr/lib/cups/filter`.
+
+---
+
 ## Jobs fail with "document format not supported"
 
 CUPS parses PPDs into an in-memory MIME database at startup and validates incoming jobs against that cache - not against the PPD file on disk. Re-running the script patches the PPD files and sends SIGHUP to cupsd to force a re-parse, so the fix takes effect immediately without a full restart:

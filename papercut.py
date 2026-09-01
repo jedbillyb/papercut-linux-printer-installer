@@ -18,6 +18,7 @@ jedbillyb@gmail.com  |  https://jedbillyb.com
 
 import argparse
 import difflib
+import errno
 import ipaddress
 import json
 import os
@@ -568,10 +569,27 @@ def fetch_from_pcap(path: str) -> list[dict]:
 
 # ── CUPS ──────────────────────────────────────────────────────────────────────
 
-def _ipp_url(p: dict) -> str:
+def _plain_ipp_url(p: dict) -> str:
+    """Device URI using the stock ipp/ipps backend (no wrapper)."""
+    scheme = "ipps" if p["scheme"] == "https" else "ipp"
+    name   = p["name"].replace(" ", "+")
+    uri    = f"{scheme}://{p['server']}:{p['port']}/printers/{name}"
+    if p.get("token"):
+        uri += f"/users/{p['user_id']}/{p['token']}"
+    return uri
+
+
+def _ipp_url(p: dict, wrapper: bool = True) -> str:
     # Route through the papercut-ipp wrapper backend so PPD-style options
     # (PageSize, Duplex) get translated to IPP keywords PaperCut Mobility
     # Print recognises.  See _WRAPPER_BACKEND_SCRIPT for the why.
+    #
+    # On immutable distros (Fedora Silverblue/Kinoite, openSUSE MicroOS,
+    # SteamOS) /usr is read-only and the wrapper cannot be installed, so fall
+    # back to the stock ipp/ipps backends — printing still works, only the
+    # option translation is lost.
+    if not wrapper:
+        return _plain_ipp_url(p)
     scheme = "papercut-ipps" if p["scheme"] == "https" else "papercut-ipp"
     name   = p["name"].replace(" ", "+")
     uri    = f"{scheme}://{p['server']}:{p['port']}/printers/{name}"
@@ -580,10 +598,16 @@ def _ipp_url(p: dict) -> str:
     return uri
 
 
-def _install_wrapper_backend() -> None:
-    """Write /usr/lib/cups/backend/papercut-ipp(s) if missing or outdated."""
+def _install_wrapper_backend() -> bool:
+    """Write /usr/lib/cups/backend/papercut-ipp(s) if missing or outdated.
+
+    Returns True if both wrappers are present and current, False if they could
+    not be installed — on immutable distros /usr is a read-only ostree/btrfs
+    snapshot, so the write fails with EROFS (or EPERM under some overlays).
+    The caller falls back to the stock ipp/ipps backends in that case.
+    """
     if not os.path.isdir(WRAPPER_BACKEND_DIR):
-        return
+        return False
     for name in WRAPPER_BACKEND_NAMES:
         path = os.path.join(WRAPPER_BACKEND_DIR, name)
         try:
@@ -594,9 +618,25 @@ def _install_wrapper_backend() -> None:
             pass
         except OSError:
             pass
-        with open(path, "w") as f:
-            f.write(_WRAPPER_BACKEND_SCRIPT)
-        os.chmod(path, 0o700)  # CUPS requires backends to be 0700 and root-owned
+        try:
+            with open(path, "w") as f:
+                f.write(_WRAPPER_BACKEND_SCRIPT)
+            os.chmod(path, 0o700)  # CUPS requires backends 0700 and root-owned
+        except OSError as e:
+            if e.errno not in (errno.EROFS, errno.EACCES, errno.EPERM):
+                raise
+            return False
+    return True
+
+
+def _warn_no_wrapper() -> None:
+    why = ("is read-only" if os.path.isdir(WRAPPER_BACKEND_DIR) else "does not exist")
+    print(f"Note: {WRAPPER_BACKEND_DIR} {why} — skipping the option-translating")
+    print("      backend wrapper.  Printing works, but paper size and duplex picked in")
+    print("      GTK/Firefox print dialogs may be ignored by the PaperCut server.")
+    print("      Pass the IPP options directly instead, e.g.")
+    print("        lp -d PRINTER -o media=ISO_A3 -o sides=two-sided-long-edge file.pdf")
+    print("      See TROUBLESHOOTING.md -> \"Immutable / read-only systems\".\n")
 
 
 def _cups_name(p: dict) -> str:
@@ -737,8 +777,11 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
             print("  Void          : sudo xbps-install cups")
             sys.exit(1)
 
+    wrapper = True
     if not dry_run:
-        _install_wrapper_backend()
+        wrapper = _install_wrapper_backend()
+        if not wrapper:
+            _warn_no_wrapper()
 
     ok = skipped = ppd_patched = 0
     patched_names: list[str] = []
@@ -776,7 +819,7 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
         if already:
             # Re-set -v to migrate older installs from bare ipp:// to the
             # papercut-ipp wrapper scheme.  Harmless if already correct.
-            _run("lpadmin", "-p", name, "-v", _ipp_url(p),
+            _run("lpadmin", "-p", name, "-v", _ipp_url(p, wrapper),
                  "-o", "auth-info-required=username,password")
             patched = _patch_ppd_pdf(name, p["server"], p["port"], ipp_printer)
             suffix = " (PPD patched)" if patched else ""
@@ -787,7 +830,7 @@ def install_printers(printers: list[dict], dry_run: bool = False) -> None:
                 patched_names.append(name)
             continue
         print(f"  (new)    {name}...", end=" ", flush=True)
-        if _run("lpadmin", "-p", name, "-v", _ipp_url(p),
+        if _run("lpadmin", "-p", name, "-v", _ipp_url(p, wrapper),
                 "-m", "everywhere", "-E", "-D", p["name"],
                 "-o", "auth-info-required=username,password"):
             _run("cupsenable", name)
@@ -1129,6 +1172,10 @@ def _install_driver_files(ppd_src: str, filters: list[str]) -> str | None:
             os.chmod(dest, 0o755)
     except OSError as exc:
         print(f"  Could not install driver files: {exc}")
+        if getattr(exc, "errno", None) in (errno.EROFS, errno.EACCES, errno.EPERM):
+            print("  Vendor filters must live in /usr/lib/cups/filter, which is")
+            print("  read-only on immutable distros — --finishing cannot work there.")
+            print("  See TROUBLESHOOTING.md -> \"Immutable / read-only systems\".")
         return None
     return ppd_dest
 

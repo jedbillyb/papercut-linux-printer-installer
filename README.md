@@ -131,7 +131,7 @@ PaperCut Mobility Print exposes each printer as a standard IPP endpoint. This sc
    - Port scan - local and explicitly-routed subnets first, then the rest of the /16 matching the gateway
 2. **Fetches** the printer list from the Mobility Print API (no credentials required at install time)
 3. **Installs** each printer into CUPS via `lpadmin` using the `everywhere` (driverless) driver
-4. **Installs a thin backend wrapper** (`/usr/lib/cups/backend/papercut-ipp(s)`) that translates PPD-style print options (`PageSize=A3`, `Duplex=DuplexNoTumble`) into real IPP attributes (`media=`, `sides=`) before handing the job to the real backend — PaperCut Mobility Print ignores the PPD-style form and would otherwise silently fall back to its server default
+4. **Installs a thin backend wrapper** (`/usr/lib/cups/backend/papercut-ipp(s)`) that translates PPD-style print options (`PageSize=A3`, `Duplex=DuplexNoTumble`) into real IPP attributes (`media=`, `sides=`) before handing the job to the real backend — PaperCut Mobility Print ignores the PPD-style form and would otherwise silently fall back to its server default. On immutable distros, where `/usr` is read-only, this step is skipped and the queues use the stock `ipp`/`ipps` backends instead
 5. **Patches each printer's PPD** to use the server's exact media keywords (e.g. `ISO_A3`) rather than the PWG self-describing names CUPS generates, so non-default paper sizes are not silently rejected
 
 ---
@@ -235,6 +235,13 @@ If the problem persists, install `cups-filters` for your distro (adds PDF conver
 
 **Printers install but jobs don't print**
 Make sure your account has print credit/quota remaining in PaperCut.
+
+**Immutable distro (Fedora Silverblue, Kinoite, MicroOS, SteamOS)**
+`/usr` is read-only, so the backend wrapper cannot be installed. The script detects this and falls back to the stock `ipp`/`ipps` backends - printers install and print normally, but paper size and duplex chosen in the print dialog may be ignored. Pass them directly instead:
+```bash
+lp -d PRINTER -o media=ISO_A3 -o sides=two-sided-long-edge file.pdf
+```
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#immutable--read-only-systems-fedora-silverblue-kinoite-opensuse-microos-steamos) for details.
 
 **`lpadmin` reports failure**
 Your CUPS service may not be running. Start it with:
