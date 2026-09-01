@@ -586,7 +586,7 @@ def _ipp_url(p: dict, wrapper: bool = True) -> str:
     #
     # On immutable distros (Fedora Silverblue/Kinoite, openSUSE MicroOS,
     # SteamOS) /usr is read-only and the wrapper cannot be installed, so fall
-    # back to the stock ipp/ipps backends — printing still works, only the
+    # back to the stock ipp/ipps backends - printing still works, only the
     # option translation is lost.
     if not wrapper:
         return _plain_ipp_url(p)
@@ -602,7 +602,7 @@ def _install_wrapper_backend() -> bool:
     """Write /usr/lib/cups/backend/papercut-ipp(s) if missing or outdated.
 
     Returns True if both wrappers are present and current, False if they could
-    not be installed — on immutable distros /usr is a read-only ostree/btrfs
+    not be installed - on immutable distros /usr is a read-only ostree/btrfs
     snapshot, so the write fails with EROFS (or EPERM under some overlays).
     The caller falls back to the stock ipp/ipps backends in that case.
     """
@@ -631,7 +631,7 @@ def _install_wrapper_backend() -> bool:
 
 def _warn_no_wrapper() -> None:
     why = ("is read-only" if os.path.isdir(WRAPPER_BACKEND_DIR) else "does not exist")
-    print(f"Note: {WRAPPER_BACKEND_DIR} {why} — skipping the option-translating")
+    print(f"Note: {WRAPPER_BACKEND_DIR} {why} - skipping the option-translating")
     print("      backend wrapper.  Printing works, but paper size and duplex picked in")
     print("      GTK/Firefox print dialogs may be ignored by the PaperCut server.")
     print("      Pass the IPP options directly instead, e.g.")
@@ -1174,7 +1174,7 @@ def _install_driver_files(ppd_src: str, filters: list[str]) -> str | None:
         print(f"  Could not install driver files: {exc}")
         if getattr(exc, "errno", None) in (errno.EROFS, errno.EACCES, errno.EPERM):
             print("  Vendor filters must live in /usr/lib/cups/filter, which is")
-            print("  read-only on immutable distros — --finishing cannot work there.")
+            print("  read-only on immutable distros, so --finishing cannot work there.")
             print("  See TROUBLESHOOTING.md -> \"Immutable / read-only systems\".")
         return None
     return ppd_dest
